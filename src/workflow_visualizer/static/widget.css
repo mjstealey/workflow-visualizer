@@ -1,0 +1,724 @@
+/* Pegasus Workflow Visualizer — UML State Machine Styling */
+
+.wfviz-container {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px;
+    color: #1a1a2e;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────── */
+
+.wfviz-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #f8f9fb;
+    border-bottom: 1px solid #e2e8f0;
+    flex-wrap: wrap;
+}
+
+.wfviz-toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 10px;
+    border-right: 1px solid #dce1e8;
+}
+
+.wfviz-toolbar-group:last-child {
+    border-right: none;
+}
+
+.wfviz-toolbar-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #64748b;
+    margin-right: 4px;
+}
+
+.wfviz-btn {
+    padding: 4px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #334155;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    line-height: 1.4;
+}
+
+.wfviz-btn:hover:not(:disabled) {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+}
+
+.wfviz-btn:active {
+    background: #e2e8f0;
+}
+
+.wfviz-btn-danger {
+    color: #dc3545;
+    border-color: #f5c2c7;
+}
+
+.wfviz-btn-danger:hover:not(:disabled) {
+    background: #fff5f5;
+    border-color: #dc3545;
+}
+
+.wfviz-btn-success {
+    color: #28a745;
+    border-color: #badbcc;
+}
+
+.wfviz-btn-success:hover:not(:disabled) {
+    background: #f0fff4;
+    border-color: #28a745;
+}
+
+/* ── Disabled buttons ────────────────────────────────────────────────── */
+
+.wfviz-btn-disabled,
+.wfviz-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* ── Pending (clicked) feedback ──────────────────────────────────────── */
+
+.wfviz-btn-pending {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+@keyframes wfviz-btn-pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 0.3; }
+}
+
+.wfviz-btn-pending {
+    animation: wfviz-btn-pulse 0.8s ease-in-out infinite;
+}
+
+/* ── Status message ──────────────────────────────────────────────────── */
+
+.wfviz-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: #475569;
+    max-width: 350px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 8px;
+    background: #f1f5f9;
+    border-radius: 4px;
+}
+
+@keyframes wfviz-status-flash {
+    0% { background: #dbeafe; color: #1e40af; }
+    100% { background: #f1f5f9; color: #475569; }
+}
+
+.wfviz-status-flash {
+    animation: wfviz-status-flash 2s ease;
+}
+
+/* ── Workflow state badge ────────────────────────────────────────────── */
+
+.wfviz-wf-badge {
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.wfviz-wf-idle {
+    background: #e2e8f0;
+    color: #64748b;
+}
+
+.wfviz-wf-running {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+
+@keyframes wfviz-badge-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(23, 162, 184, 0.4); }
+    50% { box-shadow: 0 0 0 4px rgba(23, 162, 184, 0); }
+}
+
+.wfviz-wf-running {
+    animation: wfviz-badge-pulse 2s ease-in-out infinite;
+}
+
+.wfviz-wf-completed {
+    background: #d4edda;
+    color: #155724;
+}
+
+/* ── Source mode badge ──────────────────────────────────────────────── */
+
+.wfviz-source-badge {
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+    cursor: default;
+}
+
+.wfviz-source-static {
+    background: #e2e8f0;
+    color: #64748b;
+}
+
+.wfviz-source-live {
+    background: #dcfce7;
+    color: #166534;
+}
+
+@keyframes wfviz-source-live-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.3); }
+    50% { box-shadow: 0 0 0 4px rgba(22, 163, 74, 0); }
+}
+
+.wfviz-source-live {
+    animation: wfviz-source-live-pulse 2s ease-in-out infinite;
+}
+
+.wfviz-source-ssh {
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+@keyframes wfviz-source-ssh-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.3); }
+    50% { box-shadow: 0 0 0 4px rgba(139, 92, 246, 0); }
+}
+
+.wfviz-source-ssh {
+    animation: wfviz-source-ssh-pulse 2s ease-in-out infinite;
+}
+
+/* ── Workflow info bar ────────────────────────────────────────────────── */
+
+.wfviz-info-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 5px 12px;
+    background: #f0f4f8;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 11px;
+    flex-wrap: wrap;
+    min-height: 0;
+}
+
+.wfviz-info-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.wfviz-info-key {
+    color: #94a3b8;
+    font-weight: 500;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.wfviz-info-val {
+    color: #334155;
+}
+
+.wfviz-info-label {
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.wfviz-info-uuid {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 10px;
+    color: #0891b2;
+}
+
+.wfviz-info-dir {
+    overflow: hidden;
+    min-width: 0;
+}
+
+.wfviz-info-dir .wfviz-info-val {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 10px;
+    color: #64748b;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wfviz-info-timing {
+    margin-left: auto;
+}
+
+.wfviz-info-timing .wfviz-info-val {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 10px;
+}
+
+.wfviz-info-failed {
+    color: #dc3545;
+    font-weight: 600;
+}
+
+/* ── DAG viewport ────────────────────────────────────────────────────── */
+
+.wfviz-dag-viewport {
+    position: relative;
+    width: 100%;
+    height: 500px;
+    overflow: hidden;
+    background: #fafbfc;
+    cursor: grab;
+}
+
+.wfviz-dag-viewport:active {
+    cursor: grabbing;
+}
+
+.wfviz-dag-viewport svg {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Zoom controls ───────────────────────────────────────────────────── */
+
+.wfviz-zoom-controls {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    z-index: 10;
+}
+
+.wfviz-zoom-btn {
+    width: 28px;
+    height: 28px;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #334155;
+    font-size: 16px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.wfviz-zoom-btn:hover {
+    background: #f1f5f9;
+}
+
+/* ── DAG Nodes ───────────────────────────────────────────────────────── */
+
+.wfviz-node rect {
+    stroke-width: 2;
+    rx: 4;
+    ry: 4;
+    transition: fill 0.4s ease, stroke 0.4s ease;
+}
+
+.wfviz-node-label {
+    font-size: 11px;
+    font-weight: 500;
+    fill: #1a1a2e;
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
+}
+
+.wfviz-node-state-badge {
+    font-size: 8px;
+    font-weight: 600;
+    text-anchor: middle;
+    fill: #555;
+    pointer-events: none;
+}
+
+/* ── File nodes (data I/O ellipses) ──────────────────────────────────── */
+
+.wfviz-node-file ellipse {
+    fill: #fff8e1;
+    stroke: #f9a825;
+    stroke-width: 1.5;
+    stroke-dasharray: 4 2;
+    transition: fill 0.3s ease, stroke 0.3s ease;
+}
+
+.wfviz-node-file:hover ellipse {
+    fill: #fff3c4;
+    stroke: #f57f17;
+}
+
+.wfviz-node-file .wfviz-node-label {
+    font-size: 9px;
+    font-weight: 400;
+    font-style: italic;
+    fill: #6d4c00;
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
+}
+
+/* ── Pulse animation for RUNNING nodes ───────────────────────────────── */
+
+@keyframes wfviz-glow {
+    0%, 100% {
+        stroke-width: 2;
+        filter: drop-shadow(0 0 0px rgba(23, 162, 184, 0));
+    }
+    50% {
+        stroke-width: 3.5;
+        filter: drop-shadow(0 0 6px rgba(23, 162, 184, 0.6));
+    }
+}
+
+.wfviz-running rect {
+    animation: wfviz-glow 2s ease-in-out infinite;
+}
+
+.wfviz-running .wfviz-node-state-badge {
+    animation: wfviz-badge-blink 2s ease-in-out infinite;
+}
+
+@keyframes wfviz-badge-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* ── Edge pulse for active data staging ──────────────────────────────── */
+
+@keyframes wfviz-edge-pulse {
+    0%, 100% { stroke-opacity: 1; }
+    50% { stroke-opacity: 0.3; }
+}
+
+.wfviz-edge-active {
+    animation: wfviz-edge-pulse 1.5s ease-in-out infinite;
+}
+
+/* ── DAG Edges ───────────────────────────────────────────────────────── */
+
+.wfviz-edge {
+    fill: none;
+    stroke: #94a3b8;
+    stroke-width: 1.5;
+    transition: stroke 0.3s ease;
+}
+
+.wfviz-edge-complete {
+    stroke: #86efac;
+}
+
+marker#wfviz-arrowhead path {
+    fill: #94a3b8;
+}
+
+/* ── Tooltip ─────────────────────────────────────────────────────────── */
+
+.wfviz-tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: #1e293b;
+    color: #f1f5f9;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.6;
+    max-width: 350px;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.wfviz-tooltip.visible {
+    opacity: 1;
+}
+
+.wfviz-tooltip-row {
+    display: flex;
+    gap: 8px;
+}
+
+.wfviz-tooltip-key {
+    color: #94a3b8;
+    font-weight: 500;
+    min-width: 60px;
+}
+
+.wfviz-tooltip-val {
+    color: #e2e8f0;
+}
+
+/* ── Legend ───────────────────────────────────────────────────────────── */
+
+.wfviz-legend {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    display: flex;
+    gap: 10px;
+    background: rgba(255,255,255,0.92);
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+    z-index: 10;
+}
+
+.wfviz-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: #475569;
+}
+
+.wfviz-legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    border: 1.5px solid;
+}
+
+/* ── Event Log Panel ─────────────────────────────────────────────────── */
+
+.wfviz-event-panel {
+    border-top: 1px solid #e2e8f0;
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+.wfviz-event-header {
+    position: sticky;
+    top: 0;
+    display: flex;
+    padding: 6px 12px;
+    background: #f8f9fb;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #64748b;
+    z-index: 5;
+}
+
+/* ── Job group ── */
+
+.wfviz-event-group {
+    border-bottom: 1px solid #e9ecf0;
+}
+
+/* ── Primary (summary) row ── */
+
+.wfviz-event-primary {
+    display: flex;
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 500;
+    transition: background 0.15s;
+    user-select: none;
+}
+
+.wfviz-event-primary:hover {
+    background: #f1f5f9;
+}
+
+.wfviz-event-expandable {
+    cursor: pointer;
+}
+
+.wfviz-event-chevron {
+    display: inline-block;
+    width: 14px;
+    font-size: 10px;
+    color: #94a3b8;
+    flex-shrink: 0;
+}
+
+.wfviz-event-chevron-spacer {
+    display: inline-block;
+    width: 14px;
+    flex-shrink: 0;
+}
+
+.wfviz-event-count {
+    margin-left: 4px;
+    padding: 0 5px;
+    border-radius: 8px;
+    background: #e2e8f0;
+    color: #64748b;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1.5;
+}
+
+/* ── Sub-rows (state transitions) ── */
+
+.wfviz-event-subs {
+    display: none;
+}
+
+.wfviz-event-sub {
+    display: flex;
+    padding: 3px 12px;
+    font-size: 10px;
+    color: #475569;
+    background: #fafbfc;
+    border-top: 1px solid #f1f5f9;
+    transition: background 0.15s;
+}
+
+.wfviz-event-sub:hover {
+    background: #f1f5f9;
+}
+
+.wfviz-event-sub-name {
+    padding-left: 20px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 10px;
+    color: #64748b;
+}
+
+/* ── Diagnostic rows (hold reasons, errors) ── */
+
+.wfviz-event-diag-icon {
+    margin-left: 6px;
+    color: #dc3545;
+    font-size: 12px;
+    cursor: help;
+}
+
+.wfviz-event-diag {
+    padding: 3px 12px 5px 34px;
+    background: #fff5f5;
+    border-left: 3px solid #dc3545;
+    margin-left: 12px;
+    font-size: 10px;
+    color: #7f1d1d;
+    line-height: 1.5;
+    word-break: break-word;
+    white-space: normal;
+}
+
+.wfviz-event-diag-text {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 10px;
+}
+
+/* ── Tooltip monospace values ── */
+
+.wfviz-tooltip-mono {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 10px;
+    word-break: break-all;
+    white-space: normal;
+}
+
+/* ── Tooltip diagnostic row ── */
+
+.wfviz-tooltip-diag .wfviz-tooltip-val {
+    color: #fca5a5;
+    word-break: break-word;
+    white-space: normal;
+}
+
+/* ── Shared column layout ── */
+
+.wfviz-event-col {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wfviz-event-col-name {
+    flex: 2;
+}
+
+.wfviz-event-state {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    display: inline-block;
+}
+
+/* ── No-workflow placeholder ─────────────────────────────────────────── */
+
+.wfviz-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #94a3b8;
+    gap: 12px;
+}
+
+.wfviz-placeholder-icon {
+    font-size: 48px;
+    opacity: 0.5;
+}
+
+.wfviz-placeholder-text {
+    font-size: 14px;
+}
+
+.wfviz-file-input {
+    padding: 6px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    font-size: 12px;
+    width: 350px;
+}
+
+/* ── Toggle ─────────────────────────────────────────────────────────── */
+
+.wfviz-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #64748b;
+    cursor: pointer;
+}
+
+.wfviz-toggle input {
+    cursor: pointer;
+}
