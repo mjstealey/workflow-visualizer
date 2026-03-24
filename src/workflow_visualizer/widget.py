@@ -394,7 +394,6 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
         )
 
     # Group events by exec_job_id, preserving order of most recent event
-    # event_log is already most-recent-first
     jobs: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
     for ev in event_log:
         key = ev.get("exec_job_id", "")
@@ -402,27 +401,24 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
             jobs[key] = []
         jobs[key].append(ev)
 
-    # Table header
-    th = (
-        'style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;'
-        'color:#475569;font-size:11px"'
+    # CSS grid column template for the header/summary rows
+    grid_cols = "minmax(180px,2fr) minmax(80px,1fr) 80px 70px 70px 70px 70px"
+    row_style = (
+        f'display:grid;grid-template-columns:{grid_cols};'
+        f'align-items:center;gap:0 8px;padding:4px 8px'
     )
-    parts = [
-        '<table style="width:100%;border-collapse:collapse;font-family:system-ui,sans-serif;'
-        'font-size:12px;margin-top:8px">',
-        f"<thead><tr>"
-        f"<th {th}>Job</th>"
-        f"<th {th}>Type</th>"
-        f"<th {th}>State</th>"
-        f"<th {th}>Start</th>"
-        f"<th {th}>End</th>"
-        f"<th {th}>Duration</th>"
-        f"<th {th}>Memory</th>"
-        f"</tr></thead><tbody>",
-    ]
+    hdr_style = (
+        f'{row_style};border-bottom:2px solid #e2e8f0;'
+        f'font-size:11px;color:#475569;font-weight:600'
+    )
 
-    td = 'style="padding:3px 8px;vertical-align:top"'
-    td_mono = 'style="padding:3px 8px;vertical-align:top;font-variant-numeric:tabular-nums"'
+    parts = [
+        '<div style="font-family:system-ui,sans-serif;font-size:12px;margin-top:8px">',
+        f'<div style="{hdr_style}">',
+        '<span>Job</span><span>Type</span><span>State</span>'
+        '<span>Start</span><span>End</span><span>Duration</span><span>Memory</span>',
+        '</div>',
+    ]
 
     shown = 0
     for job_id_raw, evts in jobs.items():
@@ -430,7 +426,6 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
             break
         shown += 1
 
-        # Latest event is first (most recent state for this job)
         latest = evts[0]
         state = latest.get("state", "")
         job_id = html.escape(job_id_raw)
@@ -439,46 +434,52 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
         end = html.escape(latest.get("end_time", "-"))
         dur = html.escape(latest.get("duration", "-"))
         mem = html.escape(latest.get("maxrss_fmt", "-"))
+        mono = 'font-variant-numeric:tabular-nums'
 
-        # Build expandable details
+        # Build expandable detail content
         detail_parts: List[str] = []
 
-        # Job metadata section
-        meta_lines: List[str] = []
+        # Job metadata as a 2-column key/value grid
+        meta_items: List[tuple] = []
         if latest.get("node_id"):
-            meta_lines.append(f"Node ID: {latest['node_id']}")
+            meta_items.append(("Node ID", latest["node_id"]))
         if latest.get("transformation"):
-            meta_lines.append(f"Transformation: {latest['transformation']}")
+            meta_items.append(("Transformation", latest["transformation"]))
         if latest.get("task_argv"):
-            meta_lines.append(f"Arguments: {latest['task_argv']}")
+            meta_items.append(("Arguments", latest["task_argv"]))
         if latest.get("maxrss") is not None:
-            meta_lines.append(
-                f"Peak RSS: {latest.get('maxrss_fmt', latest['maxrss'])} "
-                f"({latest['maxrss']} KB)"
-            )
+            meta_items.append((
+                "Peak RSS",
+                f"{latest.get('maxrss_fmt', latest['maxrss'])} ({latest['maxrss']} KB)",
+            ))
         if latest.get("stdout_file"):
-            meta_lines.append(f"Stdout: {latest['stdout_file']}")
+            meta_items.append(("Stdout", latest["stdout_file"]))
         if latest.get("stderr_file"):
-            meta_lines.append(f"Stderr: {latest['stderr_file']}")
+            meta_items.append(("Stderr", latest["stderr_file"]))
         if latest.get("hold_reason"):
-            meta_lines.append(f"Hold reason: {latest['hold_reason']}")
+            meta_items.append(("Hold reason", latest["hold_reason"]))
 
-        if meta_lines:
+        if meta_items:
             detail_parts.append(
-                '<div style="padding:4px 0;font-size:11px;color:#475569;line-height:1.6">'
-                + "<br>".join(html.escape(l) for l in meta_lines)
-                + "</div>"
+                '<div style="display:grid;grid-template-columns:100px 1fr;gap:2px 12px;'
+                'font-size:11px;padding:6px 0">'
             )
+            for key, val in meta_items:
+                detail_parts.append(
+                    f'<span style="color:#94a3b8;text-align:right">{html.escape(key)}</span>'
+                    f'<span style="color:#475569;word-break:break-all">{html.escape(str(val))}</span>'
+                )
+            detail_parts.append('</div>')
 
-        # State history timeline (all events for this job, most recent first)
+        # State history timeline
         if len(evts) > 1:
             detail_parts.append(
-                '<div style="margin-top:6px;font-size:11px;color:#475569">'
-                '<b>State history:</b></div>'
+                '<div style="font-size:11px;color:#475569;font-weight:600;'
+                'padding:4px 0 2px 0">State history</div>'
             )
             detail_parts.append(
-                '<table style="border-collapse:collapse;font-size:11px;'
-                'margin:2px 0 4px 0">'
+                '<div style="display:grid;grid-template-columns:auto auto auto;'
+                'gap:1px 16px;width:fit-content;font-size:11px;padding-bottom:4px">'
             )
             for hev in evts:
                 hstate = hev.get("state", "")
@@ -486,40 +487,32 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
                 ts = hev.get("timestamp")
                 ts_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "-"
                 detail_parts.append(
-                    f'<tr>'
-                    f'<td style="padding:2px 6px 2px 0;white-space:nowrap">{_badge(hstate)}</td>'
-                    f'<td style="padding:2px 12px 2px 6px;color:#64748b;white-space:nowrap">{raw}</td>'
-                    f'<td style="padding:2px 0 2px 6px;font-variant-numeric:tabular-nums;'
-                    f'white-space:nowrap;color:#64748b">{ts_str}</td>'
-                    f"</tr>"
+                    f'{_badge(hstate)}'
+                    f'<span style="color:#64748b">{raw}</span>'
+                    f'<span style="{mono};color:#64748b">{ts_str}</span>'
                 )
-            detail_parts.append("</table>")
+            detail_parts.append('</div>')
 
-        if detail_parts:
-            detail_html = "\n".join(detail_parts)
-            job_cell = (
-                f'<details style="cursor:pointer">'
-                f'<summary style="list-style:none;white-space:nowrap">'
-                f'\u25b6 {job_id}</summary>'
-                f'<div style="padding:2px 0 2px 16px">{detail_html}</div>'
-                f'</details>'
-            )
-        else:
-            job_cell = job_id
+        detail_html = "\n".join(detail_parts) if detail_parts else ""
 
+        # Row with <details> wrapping everything — expanded content is full width
         parts.append(
-            f'<tr style="border-bottom:1px solid #f1f5f9">'
-            f'<td {td}>{job_cell}</td>'
-            f'<td {td}><span style="color:#64748b">{type_desc}</span></td>'
-            f'<td {td}>{_badge(state)}</td>'
-            f'<td {td_mono}>{start}</td>'
-            f'<td {td_mono}>{end}</td>'
-            f'<td {td_mono}>{dur}</td>'
-            f'<td {td_mono}>{mem}</td>'
-            f"</tr>"
+            f'<details style="border-bottom:1px solid #f1f5f9;cursor:pointer">'
+            f'<summary style="list-style:none;{row_style}">'
+            f'<span style="white-space:nowrap">\u25b6 {job_id}</span>'
+            f'<span style="color:#64748b">{type_desc}</span>'
+            f'<span>{_badge(state)}</span>'
+            f'<span style="{mono}">{start}</span>'
+            f'<span style="{mono}">{end}</span>'
+            f'<span style="{mono}">{dur}</span>'
+            f'<span style="{mono}">{mem}</span>'
+            f'</summary>'
+            f'<div style="padding:4px 16px 8px 16px;background:#fafbfc;'
+            f'border-top:1px solid #f1f5f9">{detail_html}</div>'
+            f'</details>'
         )
 
-    parts.append("</tbody></table>")
+    parts.append('</div>')
     remaining = len(jobs) - shown
     if remaining > 0:
         parts.append(
