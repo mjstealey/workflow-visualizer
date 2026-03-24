@@ -513,6 +513,111 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             self.show_files,
         )
 
+    def watch(self, interval: Optional[float] = None, show_files: Optional[bool] = None) -> None:
+        """Auto-refresh the SVG display until the workflow completes or is interrupted.
+
+        Uses IPython's ``clear_output`` to redraw in-place, giving a pseudo-live
+        view of workflow progress in environments where the anywidget comm channel
+        is unavailable (e.g. ACCESS classic Notebook).
+
+        Parameters
+        ----------
+        interval : float, optional
+            Seconds between display refreshes.  Defaults to ``poll_interval``
+            (the same interval used for event polling).
+        show_files : bool, optional
+            Show data file nodes.  Defaults to the widget's current ``show_files``.
+
+        Usage::
+
+            w.watch()           # refresh at poll_interval rate
+            w.watch(interval=5) # refresh every 5 seconds
+        """
+        from IPython.display import display, HTML, clear_output
+
+        if show_files is not None:
+            self.show_files = show_files
+        refresh = interval if interval is not None else self._poll_interval
+
+        # Ensure polling is running
+        self.start_polling()
+
+        try:
+            while True:
+                clear_output(wait=True)
+                svg = self._repr_html_()
+                # Status line above the SVG
+                state = self.workflow_state
+                status = self.status_message
+                header = f"<b>State:</b> {html.escape(state)}"
+                if status:
+                    header += f" &mdash; {html.escape(status)}"
+                header += (
+                    f' <span style="color:#94a3b8;font-size:12px">'
+                    f"(refreshing every {refresh}s, Ctrl-C to stop)</span>"
+                )
+                display(HTML(
+                    f'<div style="font-family:system-ui,sans-serif;margin-bottom:6px">'
+                    f'{header}</div>{svg}'
+                ))
+
+                # Stop if workflow reached a terminal state
+                if state in ("SUCCESS", "FAILED", "UNKNOWN") and self._consumer and not self._polling:
+                    break
+
+                time.sleep(refresh)
+        except KeyboardInterrupt:
+            pass
+
+    def show(self, show_files: Optional[bool] = None) -> None:
+        """Re-render the DAG SVG with different options.
+
+        Parameters
+        ----------
+        show_files : bool, optional
+            Toggle data file nodes on/off.  If omitted, flips the current value.
+
+        Usage::
+
+            w.show()                # toggle show_files
+            w.show(show_files=True) # explicitly enable file nodes
+        """
+        from IPython.display import display, HTML
+
+        if show_files is None:
+            self.show_files = not self.show_files
+        else:
+            self.show_files = show_files
+        display(HTML(self._repr_html_()))
+
+    def summary(self) -> None:
+        """Print a text summary of the workflow graph."""
+        nodes = self.graph_data.get("nodes", [])
+        edges = self.graph_data.get("edges", [])
+        info = self.workflow_info
+
+        compute = [n for n in nodes if n.get("type_desc", "") in ("", "compute")]
+        all_inputs: set = set()
+        all_outputs: set = set()
+        for n in compute:
+            all_inputs.update(n.get("inputs", []))
+            all_outputs.update(n.get("outputs", []))
+
+        lines = []
+        if info.get("dax_label"):
+            lines.append(f"Workflow:  {info['dax_label']}")
+        if info.get("planner_version"):
+            lines.append(f"Pegasus:   {info['planner_version']}")
+        lines.append(f"Jobs:      {len(compute)}")
+        lines.append(f"Edges:     {len(edges)}")
+        lines.append(f"Inputs:    {len(all_inputs - all_outputs)}")
+        lines.append(f"Outputs:   {len(all_outputs - all_inputs)}")
+        if self.workflow_state != "UNKNOWN":
+            lines.append(f"State:     {self.workflow_state}")
+        if self.source_mode != "STATIC":
+            lines.append(f"Source:    {self.source_mode} ({self.source_detail})")
+        print("\n".join(lines))
+
     def close(self) -> None:
         """Clean up resources on widget close."""
         self.stop_polling()
