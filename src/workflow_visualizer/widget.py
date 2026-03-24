@@ -210,16 +210,18 @@ def _render_dag_svg(
 
     # Nodes
     file_color = {"fill": "#f8fafc", "stroke": "#94a3b8"}
+    file_meta = (graph_data.get("metadata") or {}).get("file_meta", {})
     for nid, (cx, cy) in pos.items():
         is_file = nid in file_node_ids
         if is_file:
             nw, nh, rx = FILE_W, FILE_H, 2
             color = file_color
             font_size = 10
+            state = ""
+            js: Any = None
         else:
             nw, nh, rx = NODE_W, NODE_H, 6
             js = job_states.get(nid, "UNSUBMITTED")
-            # job_states values may be dicts (from EventConsumer) or strings
             state = js["state"] if isinstance(js, dict) else js
             color = state_colors.get(state, default_color)
             font_size = 12
@@ -228,6 +230,56 @@ def _render_dag_svg(
         label = html.escape(node_map[nid].get("nodeLabel", nid))
         if len(label) > 20:
             label = label[:18] + "\u2026"
+
+        # Build tooltip text
+        tip_lines: List[str] = []
+        if is_file:
+            lfn = nid.removeprefix("file:")
+            tip_lines.append(f"File: {lfn}")
+            fm = file_meta.get(lfn, {})
+            if fm.get("type"):
+                tip_lines.append(f"Type: {fm['type']}")
+            if fm.get("size") is not None:
+                tip_lines.append(f"Size: {fm['size']}")
+            if fm.get("stageOut") is not None:
+                tip_lines.append(f"Stage out: {fm['stageOut']}")
+        else:
+            nd = node_map[nid]
+            tip_lines.append(f"ID: {nid}")
+            if nd.get("name"):
+                tip_lines.append(f"Name: {nd['name']}")
+            if state:
+                tip_lines.append(f"State: {state}")
+            # Info from job_states (EventConsumer rich data)
+            if isinstance(js, dict):
+                if js.get("exec_job_id"):
+                    tip_lines.append(f"Exec: {js['exec_job_id']}")
+                if js.get("type_desc"):
+                    tip_lines.append(f"Type: {js['type_desc']}")
+                if js.get("duration") and js["duration"] != "-":
+                    tip_lines.append(f"Duration: {js['duration']}")
+                if js.get("transformation"):
+                    tip_lines.append(f"Transformation: {js['transformation']}")
+                if js.get("exitcode") is not None and js.get("exitcode") != 0:
+                    tip_lines.append(f"Exit code: {js['exitcode']}")
+                if js.get("hold_reason"):
+                    tip_lines.append(f"Hold reason: {js['hold_reason']}")
+            # Info from workflow.yml node data
+            if nd.get("arguments"):
+                args = nd["arguments"]
+                arg_str = " ".join(str(a) for a in args) if isinstance(args, list) else str(args)
+                if len(arg_str) > 80:
+                    arg_str = arg_str[:77] + "..."
+                tip_lines.append(f"Args: {arg_str}")
+            if nd.get("inputs"):
+                tip_lines.append(f"Inputs: {', '.join(nd['inputs'])}")
+            if nd.get("outputs"):
+                tip_lines.append(f"Outputs: {', '.join(nd['outputs'])}")
+
+        tooltip = html.escape("\n".join(tip_lines))
+
+        parts.append(f"<g>")
+        parts.append(f"<title>{tooltip}</title>")
         parts.append(
             f'<rect x="{x}" y="{y}" width="{nw}" height="{nh}" '
             f'rx="{rx}" ry="{rx}" fill="{color["fill"]}" stroke="{color["stroke"]}" '
@@ -238,6 +290,7 @@ def _render_dag_svg(
             f'dominant-baseline="central" font-size="{font_size}" fill="#1e293b">'
             f'{label}</text>'
         )
+        parts.append("</g>")
 
     # Legend
     legend_states = ["UNSUBMITTED", "QUEUED", "PRE", "RUNNING", "POST", "SUCCESS", "FAILED", "HELD"]
