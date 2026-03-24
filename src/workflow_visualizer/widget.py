@@ -247,6 +247,21 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
 
         self.send({"type": "action_result", "action": action, "result": result})
 
+    def _repr_mimebundle_(self, **kwargs: Any) -> Dict[str, Any]:
+        """Choose the best display representation for the current environment.
+
+        Tries the anywidget widget-view MIME type first.  If the comm channel
+        is unavailable (e.g. reverse-proxy MIME issues on ACCESS Open OnDemand),
+        falls back to an inline ``text/html`` rendering via :meth:`_repr_html_`.
+        """
+        try:
+            bundle = super()._repr_mimebundle_(**kwargs)
+            if bundle and "application/vnd.jupyter.widget-view+json" in bundle:
+                return bundle
+        except Exception:
+            pass
+        return {"text/html": self._repr_html_()}
+
     def _repr_html_(self) -> str:
         """Inline HTML/SVG fallback for environments where anywidget ESM fails.
 
@@ -262,7 +277,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         show_files_js = "true" if self.show_files else "false"
 
         return f"""\
-<div id="{container_id}" style="width:100%;height:600px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;position:relative;font-family:system-ui,-apple-system,sans-serif">
+<div id="{container_id}" style="min-width:800px;width:100%;height:600px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;position:relative;font-family:system-ui,-apple-system,sans-serif">
   <svg width="100%" height="100%"><defs></defs><g class="dag-content"></g></svg>
 </div>
 <script type="module">
@@ -332,99 +347,105 @@ if (!showFiles) {{
 
 dagre.layout(g);
 
-// ── Render ───────────────────────────────────────────────────────────────
-const container = d3.select("#" + containerId);
-const svg = container.select("svg");
-const gContent = svg.select("g.dag-content");
-const defs = svg.select("defs");
+// ── Render (deferred until container has layout dimensions) ──────────────
+function renderGraph() {{
+  const container = d3.select("#" + containerId);
+  if (!container.node()) return;
+  const svg = container.select("svg");
+  const gContent = svg.select("g.dag-content");
+  const defs = svg.select("defs");
 
-// Arrowhead marker
-defs.append("marker")
-  .attr("id", containerId + "-arrow")
-  .attr("viewBox", "0 0 10 10")
-  .attr("refX", 9).attr("refY", 5)
-  .attr("markerWidth", 8).attr("markerHeight", 8)
-  .attr("orient", "auto-start-reverse")
-  .append("path").attr("d", "M 0 0 L 10 5 L 0 10 z").attr("fill", "#94a3b8");
+  // Arrowhead marker
+  defs.append("marker")
+    .attr("id", containerId + "-arrow")
+    .attr("viewBox", "0 0 10 10")
+    .attr("refX", 9).attr("refY", 5)
+    .attr("markerWidth", 8).attr("markerHeight", 8)
+    .attr("orient", "auto-start-reverse")
+    .append("path").attr("d", "M 0 0 L 10 5 L 0 10 z").attr("fill", "#94a3b8");
 
-// Edges
-const line = d3.line().x(d => d.x).y(d => d.y).curve(d3.curveBasis);
-for (const e of g.edges()) {{
-  const edgeObj = g.edge(e);
-  gContent.append("path")
-    .attr("d", line(edgeObj.points))
-    .attr("fill", "none")
-    .attr("stroke", "#94a3b8")
-    .attr("stroke-width", 1.5)
-    .attr("marker-end", `url(#${{containerId}}-arrow)`);
-}}
-
-// Nodes
-for (const id of g.nodes()) {{
-  const n = g.node(id);
-  if (!n) continue;
-  const isFile = n.data && n.data._isFile;
-  const state = jobStates[id] || "UNSUBMITTED";
-  const color = isFile
-    ? {{ fill: "#f8fafc", stroke: "#94a3b8" }}
-    : (stateColors[state] || {{ fill: DEFAULT_FILL, stroke: DEFAULT_STROKE }});
-
-  const nodeG = gContent.append("g")
-    .attr("transform", `translate(${{n.x - n.width / 2}},${{n.y - n.height / 2}})`);
-
-  nodeG.append("rect")
-    .attr("width", n.width).attr("height", n.height)
-    .attr("rx", isFile ? 2 : 6).attr("ry", isFile ? 2 : 6)
-    .attr("fill", color.fill).attr("stroke", color.stroke).attr("stroke-width", 1.5);
-
-  if (isFile) {{
-    nodeG.append("rect")
-      .attr("x", n.width - 12).attr("y", 0)
-      .attr("width", 12).attr("height", 10)
-      .attr("fill", color.stroke).attr("opacity", 0.25);
+  // Edges
+  const line = d3.line().x(d => d.x).y(d => d.y).curve(d3.curveBasis);
+  for (const e of g.edges()) {{
+    const edgeObj = g.edge(e);
+    gContent.append("path")
+      .attr("d", line(edgeObj.points))
+      .attr("fill", "none")
+      .attr("stroke", "#94a3b8")
+      .attr("stroke-width", 1.5)
+      .attr("marker-end", `url(#${{containerId}}-arrow)`);
   }}
 
-  nodeG.append("text")
-    .attr("x", n.width / 2).attr("y", n.height / 2)
-    .attr("text-anchor", "middle").attr("dominant-baseline", "central")
-    .attr("font-size", isFile ? "10px" : "12px")
-    .attr("font-family", "system-ui,-apple-system,sans-serif")
-    .attr("fill", "#1e293b")
-    .text(n.label);
+  // Nodes
+  for (const id of g.nodes()) {{
+    const n = g.node(id);
+    if (!n) continue;
+    const isFile = n.data && n.data._isFile;
+    const state = jobStates[id] || "UNSUBMITTED";
+    const color = isFile
+      ? {{ fill: "#f8fafc", stroke: "#94a3b8" }}
+      : (stateColors[state] || {{ fill: DEFAULT_FILL, stroke: DEFAULT_STROKE }});
+
+    const nodeG = gContent.append("g")
+      .attr("transform", `translate(${{n.x - n.width / 2}},${{n.y - n.height / 2}})`);
+
+    nodeG.append("rect")
+      .attr("width", n.width).attr("height", n.height)
+      .attr("rx", isFile ? 2 : 6).attr("ry", isFile ? 2 : 6)
+      .attr("fill", color.fill).attr("stroke", color.stroke).attr("stroke-width", 1.5);
+
+    if (isFile) {{
+      nodeG.append("rect")
+        .attr("x", n.width - 12).attr("y", 0)
+        .attr("width", 12).attr("height", 10)
+        .attr("fill", color.stroke).attr("opacity", 0.25);
+    }}
+
+    nodeG.append("text")
+      .attr("x", n.width / 2).attr("y", n.height / 2)
+      .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+      .attr("font-size", isFile ? "10px" : "12px")
+      .attr("font-family", "system-ui,-apple-system,sans-serif")
+      .attr("fill", "#1e293b")
+      .text(n.label);
+  }}
+
+  // ── Zoom / pan ─────────────────────────────────────────────────────────
+  const zoom = d3.zoom()
+    .scaleExtent([0.2, 4])
+    .on("zoom", (event) => gContent.attr("transform", event.transform));
+  svg.call(zoom);
+
+  // Auto-center using resolved dimensions (fallback to 800x600)
+  const gGraph = g.graph();
+  const el = container.node();
+  const cw = el.clientWidth || 800;
+  const ch = el.clientHeight || 600;
+  const gw = gGraph.width || 1;
+  const gh = gGraph.height || 1;
+  const scale = Math.min(cw / gw, ch / gh, 1) * 0.9;
+  const tx = (cw - gw * scale) / 2;
+  const ty = (ch - gh * scale) / 2;
+  svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+
+  // ── Legend ──────────────────────────────────────────────────────────────
+  const legendStates = ["UNSUBMITTED", "QUEUED", "RUNNING", "SUCCESS", "FAILED", "HELD"];
+  const legend = container.append("div")
+    .style("position", "absolute").style("top", "8px").style("right", "8px")
+    .style("display", "flex").style("gap", "8px").style("flex-wrap", "wrap")
+    .style("font-size", "11px").style("color", "#475569");
+  for (const st of legendStates) {{
+    const c = stateColors[st] || UNKNOWN_COLOR;
+    const item = legend.append("div").style("display", "flex").style("align-items", "center").style("gap", "3px");
+    item.append("div")
+      .style("width", "10px").style("height", "10px").style("border-radius", "2px")
+      .style("background", c.fill).style("border", `1px solid ${{c.stroke}}`);
+    item.append("span").text(st);
+  }}
 }}
 
-// ── Zoom / pan ───────────────────────────────────────────────────────────
-const zoom = d3.zoom()
-  .scaleExtent([0.2, 4])
-  .on("zoom", (event) => gContent.attr("transform", event.transform));
-svg.call(zoom);
-
-// Auto-center
-const gGraph = g.graph();
-const el = container.node();
-const cw = el.clientWidth || 800;
-const ch = el.clientHeight || 600;
-const gw = gGraph.width || 1;
-const gh = gGraph.height || 1;
-const scale = Math.min(cw / gw, ch / gh, 1) * 0.9;
-const tx = (cw - gw * scale) / 2;
-const ty = (ch - gh * scale) / 2;
-svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
-
-// ── Legend ────────────────────────────────────────────────────────────────
-const legendStates = ["UNSUBMITTED", "QUEUED", "RUNNING", "SUCCESS", "FAILED", "HELD"];
-const legend = container.append("div")
-  .style("position", "absolute").style("top", "8px").style("right", "8px")
-  .style("display", "flex").style("gap", "8px").style("flex-wrap", "wrap")
-  .style("font-size", "11px").style("color", "#475569");
-for (const st of legendStates) {{
-  const c = stateColors[st] || UNKNOWN_COLOR;
-  const item = legend.append("div").style("display", "flex").style("align-items", "center").style("gap", "3px");
-  item.append("div")
-    .style("width", "10px").style("height", "10px").style("border-radius", "2px")
-    .style("background", c.fill).style("border", `1px solid ${{c.stroke}}`);
-  item.append("span").text(st);
-}}
+// Defer rendering so the container has final dimensions in the DOM
+requestAnimationFrame(() => requestAnimationFrame(renderGraph));
 </script>"""
 
     def close(self) -> None:
