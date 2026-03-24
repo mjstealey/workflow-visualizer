@@ -473,11 +473,11 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
         # State history timeline (all events for this job, most recent first)
         if len(evts) > 1:
             detail_parts.append(
-                '<div style="margin-top:4px;font-size:11px;color:#475569">'
+                '<div style="margin-top:6px;font-size:11px;color:#475569">'
                 '<b>State history:</b></div>'
             )
             detail_parts.append(
-                '<table style="width:100%;border-collapse:collapse;font-size:11px;'
+                '<table style="border-collapse:collapse;font-size:11px;'
                 'margin:2px 0 4px 0">'
             )
             for hev in evts:
@@ -486,10 +486,11 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
                 ts = hev.get("timestamp")
                 ts_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "-"
                 detail_parts.append(
-                    f'<tr style="border-bottom:1px solid #f8fafc">'
-                    f'<td style="padding:2px 8px;width:60px">{_badge(hstate)}</td>'
-                    f'<td style="padding:2px 8px;color:#64748b">{raw}</td>'
-                    f'<td style="padding:2px 8px;font-variant-numeric:tabular-nums">{ts_str}</td>'
+                    f'<tr>'
+                    f'<td style="padding:2px 6px 2px 0;white-space:nowrap">{_badge(hstate)}</td>'
+                    f'<td style="padding:2px 12px 2px 6px;color:#64748b;white-space:nowrap">{raw}</td>'
+                    f'<td style="padding:2px 0 2px 6px;font-variant-numeric:tabular-nums;'
+                    f'white-space:nowrap;color:#64748b">{ts_str}</td>'
                     f"</tr>"
                 )
             detail_parts.append("</table>")
