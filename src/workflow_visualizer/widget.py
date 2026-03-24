@@ -218,7 +218,9 @@ def _render_dag_svg(
             font_size = 10
         else:
             nw, nh, rx = NODE_W, NODE_H, 6
-            state = job_states.get(nid, "UNSUBMITTED")
+            js = job_states.get(nid, "UNSUBMITTED")
+            # job_states values may be dicts (from EventConsumer) or strings
+            state = js["state"] if isinstance(js, dict) else js
             color = state_colors.get(state, default_color)
             font_size = 12
         x = cx - nw / 2
