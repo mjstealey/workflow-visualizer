@@ -1,8 +1,11 @@
 """Anywidget-based Pegasus workflow visualizer for Jupyter notebooks."""
 from __future__ import annotations
 
+import html
+import json
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -243,6 +246,186 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
                 self.status_message = result.get("stdout", "OK").strip()[:200]
 
         self.send({"type": "action_result", "action": action, "result": result})
+
+    def _repr_html_(self) -> str:
+        """Inline HTML/SVG fallback for environments where anywidget ESM fails.
+
+        Renders the workflow DAG using D3 and dagre loaded as ES modules from
+        esm.sh.  This method is called by Jupyter's display machinery when the
+        anywidget comm channel is unavailable (e.g. wrong MIME type behind a
+        reverse proxy).
+        """
+        container_id = f"wfviz-{uuid.uuid4().hex[:12]}"
+        graph_json = html.escape(json.dumps(self.graph_data), quote=True)
+        job_states_json = html.escape(json.dumps(dict(self.job_states)), quote=True)
+        colors_json = html.escape(json.dumps(dict(self.state_colors)), quote=True)
+        show_files_js = "true" if self.show_files else "false"
+
+        return f"""\
+<div id="{container_id}" style="width:100%;height:600px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;position:relative;font-family:system-ui,-apple-system,sans-serif">
+  <svg width="100%" height="100%"><defs></defs><g class="dag-content"></g></svg>
+</div>
+<script type="module">
+import * as d3 from "https://esm.sh/d3@7";
+import dagre from "https://esm.sh/dagre@0.8.5";
+
+const graphData   = JSON.parse({json.dumps(json.dumps(self.graph_data))});
+const jobStates   = JSON.parse({json.dumps(json.dumps(dict(self.job_states)))});
+const stateColors = JSON.parse({json.dumps(json.dumps(dict(self.state_colors)))});
+const showFiles   = {show_files_js};
+const containerId = "{container_id}";
+
+const DEFAULT_FILL   = "#e0f2fe";
+const DEFAULT_STROKE = "#0284c7";
+const UNKNOWN_COLOR  = {{ fill: "#e0e0e0", stroke: "#999999" }};
+
+function getColor(state) {{
+  return stateColors[state] || UNKNOWN_COLOR;
+}}
+
+// ── Build dagre graph ────────────────────────────────────────────────────
+const g = new dagre.graphlib.Graph();
+g.setGraph({{ rankdir: "TB", ranksep: 60, nodesep: 40, marginx: 30, marginy: 30 }});
+g.setDefaultEdgeLabel(() => ({{}}));
+
+const nodes = graphData.nodes || [];
+const edges = graphData.edges || [];
+const fileMeta = (graphData.metadata && graphData.metadata.file_meta) || {{}};
+
+for (const node of nodes) {{
+  const td = node.type_desc || "";
+  if (td !== "" && td !== "compute") continue;
+  const label = node.nodeLabel || node.id || "";
+  g.setNode(node.id, {{ label, width: 150, height: 40, data: node }});
+}}
+
+if (!showFiles) {{
+  for (const edge of edges) {{
+    if (g.hasNode(edge.source) && g.hasNode(edge.target)) {{
+      g.setEdge(edge.source, edge.target);
+    }}
+  }}
+}} else {{
+  const fileNodes = new Set();
+  for (const node of nodes) {{
+    if (!g.hasNode(node.id)) continue;
+    for (const lfn of (node.outputs || [])) {{
+      if (!fileNodes.has(lfn)) {{
+        const meta = fileMeta[lfn] || {{ lfn }};
+        const lbl = lfn.length > 20 ? "..." + lfn.slice(-18) : lfn;
+        g.setNode("file:" + lfn, {{ label: lbl, width: 130, height: 26, data: {{ _isFile: true, lfn, ...meta }} }});
+        fileNodes.add(lfn);
+      }}
+      g.setEdge(node.id, "file:" + lfn);
+    }}
+    for (const lfn of (node.inputs || [])) {{
+      if (!fileNodes.has(lfn)) {{
+        const meta = fileMeta[lfn] || {{ lfn }};
+        const lbl = lfn.length > 20 ? "..." + lfn.slice(-18) : lfn;
+        g.setNode("file:" + lfn, {{ label: lbl, width: 130, height: 26, data: {{ _isFile: true, lfn, ...meta }} }});
+        fileNodes.add(lfn);
+      }}
+      g.setEdge("file:" + lfn, node.id);
+    }}
+  }}
+}}
+
+dagre.layout(g);
+
+// ── Render ───────────────────────────────────────────────────────────────
+const container = d3.select("#" + containerId);
+const svg = container.select("svg");
+const gContent = svg.select("g.dag-content");
+const defs = svg.select("defs");
+
+// Arrowhead marker
+defs.append("marker")
+  .attr("id", containerId + "-arrow")
+  .attr("viewBox", "0 0 10 10")
+  .attr("refX", 9).attr("refY", 5)
+  .attr("markerWidth", 8).attr("markerHeight", 8)
+  .attr("orient", "auto-start-reverse")
+  .append("path").attr("d", "M 0 0 L 10 5 L 0 10 z").attr("fill", "#94a3b8");
+
+// Edges
+const line = d3.line().x(d => d.x).y(d => d.y).curve(d3.curveBasis);
+for (const e of g.edges()) {{
+  const edgeObj = g.edge(e);
+  gContent.append("path")
+    .attr("d", line(edgeObj.points))
+    .attr("fill", "none")
+    .attr("stroke", "#94a3b8")
+    .attr("stroke-width", 1.5)
+    .attr("marker-end", `url(#${{containerId}}-arrow)`);
+}}
+
+// Nodes
+for (const id of g.nodes()) {{
+  const n = g.node(id);
+  if (!n) continue;
+  const isFile = n.data && n.data._isFile;
+  const state = jobStates[id] || "UNSUBMITTED";
+  const color = isFile
+    ? {{ fill: "#f8fafc", stroke: "#94a3b8" }}
+    : (stateColors[state] || {{ fill: DEFAULT_FILL, stroke: DEFAULT_STROKE }});
+
+  const nodeG = gContent.append("g")
+    .attr("transform", `translate(${{n.x - n.width / 2}},${{n.y - n.height / 2}})`);
+
+  nodeG.append("rect")
+    .attr("width", n.width).attr("height", n.height)
+    .attr("rx", isFile ? 2 : 6).attr("ry", isFile ? 2 : 6)
+    .attr("fill", color.fill).attr("stroke", color.stroke).attr("stroke-width", 1.5);
+
+  if (isFile) {{
+    nodeG.append("rect")
+      .attr("x", n.width - 12).attr("y", 0)
+      .attr("width", 12).attr("height", 10)
+      .attr("fill", color.stroke).attr("opacity", 0.25);
+  }}
+
+  nodeG.append("text")
+    .attr("x", n.width / 2).attr("y", n.height / 2)
+    .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+    .attr("font-size", isFile ? "10px" : "12px")
+    .attr("font-family", "system-ui,-apple-system,sans-serif")
+    .attr("fill", "#1e293b")
+    .text(n.label);
+}}
+
+// ── Zoom / pan ───────────────────────────────────────────────────────────
+const zoom = d3.zoom()
+  .scaleExtent([0.2, 4])
+  .on("zoom", (event) => gContent.attr("transform", event.transform));
+svg.call(zoom);
+
+// Auto-center
+const gGraph = g.graph();
+const el = container.node();
+const cw = el.clientWidth || 800;
+const ch = el.clientHeight || 600;
+const gw = gGraph.width || 1;
+const gh = gGraph.height || 1;
+const scale = Math.min(cw / gw, ch / gh, 1) * 0.9;
+const tx = (cw - gw * scale) / 2;
+const ty = (ch - gh * scale) / 2;
+svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+
+// ── Legend ────────────────────────────────────────────────────────────────
+const legendStates = ["UNSUBMITTED", "QUEUED", "RUNNING", "SUCCESS", "FAILED", "HELD"];
+const legend = container.append("div")
+  .style("position", "absolute").style("top", "8px").style("right", "8px")
+  .style("display", "flex").style("gap", "8px").style("flex-wrap", "wrap")
+  .style("font-size", "11px").style("color", "#475569");
+for (const st of legendStates) {{
+  const c = stateColors[st] || UNKNOWN_COLOR;
+  const item = legend.append("div").style("display", "flex").style("align-items", "center").style("gap", "3px");
+  item.append("div")
+    .style("width", "10px").style("height", "10px").style("border-radius", "2px")
+    .style("background", c.fill).style("border", `1px solid ${{c.stroke}}`);
+  item.append("span").text(st);
+}}
+</script>"""
 
     def close(self) -> None:
         """Clean up resources on widget close."""
