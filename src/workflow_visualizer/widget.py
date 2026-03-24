@@ -984,7 +984,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
                 display(HTML(f"{header}{svg}{event_table}{refresh_note}"))
 
                 # Stop if workflow reached a terminal state
-                if state in ("SUCCESS", "FAILED", "UNKNOWN") and self._consumer and not self._polling:
+                if self.workflow_state in ("SUCCESS", "FAILED", "UNKNOWN") and self._consumer and not self._polling:
                     break
 
                 time.sleep(refresh)
