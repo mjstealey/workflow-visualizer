@@ -361,6 +361,141 @@ def _render_dag_svg(
     return "\n".join(parts)
 
 
+def _render_header(
+    workflow_info: Dict[str, Any],
+    workflow_state: str,
+    job_states: Dict[str, Any],
+    source_mode: str,
+    source_detail: str,
+) -> str:
+    """Render a workflow info header bar above the DAG."""
+    from datetime import datetime
+
+    info = workflow_info
+    name = html.escape(info.get("dax_label", ""))
+    version = html.escape(info.get("planner_version", ""))
+    user = html.escape(info.get("user", ""))
+    wf_uuid = html.escape(info.get("wf_uuid", ""))
+
+    # State badge
+    state_bg = {
+        "WORKFLOW_STARTED": ("#d1ecf1", "#17a2b8"),
+        "WORKFLOW_TERMINATED": ("#d4edda", "#28a745"),
+        "UNKNOWN": ("#e0e0e0", "#666"),
+    }
+    bg, fg = state_bg.get(workflow_state, ("#e0e0e0", "#666"))
+    # Map to display-friendly label
+    state_label = {
+        "WORKFLOW_STARTED": "RUNNING",
+        "WORKFLOW_TERMINATED": "COMPLETED",
+    }.get(workflow_state, workflow_state)
+
+    state_badge = (
+        f'<span style="display:inline-block;padding:2px 10px;border-radius:4px;'
+        f'background:{bg};color:{fg};font-size:12px;font-weight:700;letter-spacing:0.5px">'
+        f'{html.escape(state_label)}</span>'
+    )
+
+    # Source mode badge
+    mode_colors = {"STATIC": "#94a3b8", "LIVE": "#28a745", "SSH": "#4a90d9"}
+    mc = mode_colors.get(source_mode, "#94a3b8")
+    mode_badge = (
+        f'<span style="display:inline-block;padding:1px 6px;border-radius:3px;'
+        f'border:1px solid {mc};color:{mc};font-size:10px;font-weight:600">'
+        f'{html.escape(source_mode)}</span>'
+    )
+
+    # Job progress counters from job_states
+    total = info.get("total_jobs")
+    done = info.get("done")
+    failed = info.get("failed")
+    elapsed = info.get("elapsed")
+
+    # If workflow_end hasn't arrived yet, compute live counts from job_states
+    if total is None and job_states:
+        total = len(job_states)
+    if done is None and job_states:
+        done = sum(
+            1 for js in job_states.values()
+            if (js["state"] if isinstance(js, dict) else js) in ("SUCCESS", "DONE")
+        )
+    if failed is None and job_states:
+        failed = sum(
+            1 for js in job_states.values()
+            if (js["state"] if isinstance(js, dict) else js) == "FAILED"
+        )
+
+    # Elapsed time
+    if elapsed is not None:
+        from workflow_visualizer.state import fmt_duration
+        elapsed_str = fmt_duration(elapsed)
+    elif info.get("start_time"):
+        import time as _time
+        end_t = info.get("end_time") or _time.time()
+        from workflow_visualizer.state import fmt_duration
+        elapsed_str = fmt_duration(end_t - info["start_time"])
+    else:
+        elapsed_str = None
+
+    # Start/end times
+    start_str = ""
+    if info.get("start_time"):
+        start_str = datetime.fromtimestamp(info["start_time"]).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Build header
+    stat = 'style="color:#475569;font-size:12px"'
+    stat_val = 'style="font-weight:600;color:#1e293b;font-size:13px"'
+    stat_lbl = 'style="color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:0.5px"'
+
+    parts = [
+        '<div style="font-family:system-ui,sans-serif;padding:10px 12px;'
+        'border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;background:#fff">',
+        # Top line: name + state + mode
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">',
+    ]
+    if name:
+        parts.append(
+            f'<span style="font-size:16px;font-weight:700;color:#1e293b">{name}</span>'
+        )
+    parts.append(state_badge)
+    parts.append(mode_badge)
+    if version:
+        parts.append(
+            f'<span style="color:#94a3b8;font-size:11px;margin-left:auto">Pegasus {version}</span>'
+        )
+    parts.append('</div>')
+
+    # Stats row
+    stats: List[str] = []
+    if total is not None:
+        progress = f"{done or 0}/{total}"
+        if failed and failed > 0:
+            progress += f' <span style="color:#dc3545">({failed} failed)</span>'
+        stats.append(f'<div><div {stat_lbl}>Jobs</div><div {stat_val}>{progress}</div></div>')
+    if elapsed_str:
+        stats.append(f'<div><div {stat_lbl}>Elapsed</div><div {stat_val}>{elapsed_str}</div></div>')
+    if start_str:
+        stats.append(f'<div><div {stat_lbl}>Started</div><div {stat_val}>{start_str}</div></div>')
+    if user:
+        stats.append(f'<div><div {stat_lbl}>User</div><div {stat_val}>{user}</div></div>')
+    if source_detail and source_mode != "STATIC":
+        detail_short = source_detail if len(source_detail) <= 50 else "..." + source_detail[-47:]
+        stats.append(
+            f'<div><div {stat_lbl}>Source</div>'
+            f'<div style="font-size:11px;color:#475569">{html.escape(detail_short)}</div></div>'
+        )
+
+    if stats:
+        parts.append(
+            '<div style="display:flex;gap:24px;flex-wrap:wrap">'
+            + "".join(stats)
+            + '</div>'
+        )
+
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
 def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> str:
     """Render the event log grouped by job, with expandable state history.
 
@@ -778,9 +913,20 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             pass
         # Ensure events are loaded for the HTML fallback
         self._poll_once()
+        header = self._render_header_html()
         svg = self._repr_html_()
         event_table = _render_event_table(list(self.event_log))
-        return {"text/html": f"{svg}{event_table}"}
+        return {"text/html": f"{header}{svg}{event_table}"}
+
+    def _render_header_html(self) -> str:
+        """Render the workflow info header bar."""
+        return _render_header(
+            dict(self.workflow_info),
+            self.workflow_state,
+            dict(self.job_states),
+            self.source_mode,
+            self.source_detail,
+        )
 
     def _repr_html_(self) -> str:
         """Pure SVG fallback for environments where anywidget ESM fails.
@@ -827,22 +973,15 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         try:
             while True:
                 clear_output(wait=True)
+                header = self._render_header_html()
                 svg = self._repr_html_()
-                # Status line above the SVG
-                state = self.workflow_state
-                status = self.status_message
-                header = f"<b>State:</b> {html.escape(state)}"
-                if status:
-                    header += f" &mdash; {html.escape(status)}"
-                header += (
-                    f' <span style="color:#94a3b8;font-size:12px">'
-                    f"(refreshing every {refresh}s, Ctrl-C to stop)</span>"
-                )
                 event_table = _render_event_table(list(self.event_log))
-                display(HTML(
-                    f'<div style="font-family:system-ui,sans-serif;margin-bottom:6px">'
-                    f'{header}</div>{svg}{event_table}'
-                ))
+                refresh_note = (
+                    f'<div style="font-family:system-ui,sans-serif;font-size:11px;'
+                    f'color:#94a3b8;text-align:right;padding:2px 4px">'
+                    f'Refreshing every {refresh}s &mdash; Ctrl-C to stop</div>'
+                )
+                display(HTML(f"{header}{svg}{event_table}{refresh_note}"))
 
                 # Stop if workflow reached a terminal state
                 if state in ("SUCCESS", "FAILED", "UNKNOWN") and self._consumer and not self._polling:
@@ -874,9 +1013,10 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             self.show_files = not self.show_files
         else:
             self.show_files = show_files
+        header = self._render_header_html()
         svg = self._repr_html_()
         event_table = _render_event_table(list(self.event_log))
-        display(HTML(f"{svg}{event_table}"))
+        display(HTML(f"{header}{svg}{event_table}"))
 
     def summary(self) -> None:
         """Print a text summary of the workflow graph."""
