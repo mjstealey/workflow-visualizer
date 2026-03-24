@@ -655,6 +655,19 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         """Stop the background polling thread."""
         self._polling = False
 
+    def _poll_once(self) -> None:
+        """Synchronous single poll — ensures event_log is populated before rendering."""
+        if self._consumer is None:
+            return
+        try:
+            if isinstance(self._consumer, RemoteEventConsumer):
+                self._consumer.sync()
+            elif isinstance(self._consumer, EventConsumer):
+                self._consumer.poll()
+            self._sync_state()
+        except Exception:
+            pass
+
     def _poll_loop(self) -> None:
         """Background loop that polls the event consumer."""
         while self._polling:
@@ -769,7 +782,11 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
                 return bundle
         except Exception:
             pass
-        return {"text/html": self._repr_html_()}
+        # Ensure events are loaded for the HTML fallback
+        self._poll_once()
+        svg = self._repr_html_()
+        event_table = _render_event_table(list(self.event_log))
+        return {"text/html": f"{svg}{event_table}"}
 
     def _repr_html_(self) -> str:
         """Pure SVG fallback for environments where anywidget ESM fails.
@@ -855,6 +872,9 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             w.show(show_files=True) # explicitly enable file nodes
         """
         from IPython.display import display, HTML
+
+        # Ensure events are loaded before rendering
+        self._poll_once()
 
         if show_files is None:
             self.show_files = not self.show_files
