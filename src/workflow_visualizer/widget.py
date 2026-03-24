@@ -361,17 +361,19 @@ def _render_dag_svg(
     return "\n".join(parts)
 
 
-def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 20) -> str:
-    """Render the event log as expandable HTML rows (most recent first).
+def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> str:
+    """Render the event log grouped by job, with expandable state history.
 
-    Uses native ``<details>``/``<summary>`` elements — no JavaScript needed.
-    The summary row shows job, type, state, timing, and memory.  Expanding
-    reveals full details (transformation, arguments, stdout/stderr paths, etc.).
+    Each unique job appears once as a primary row showing its current (latest)
+    state.  Clicking expands to reveal the full state transition history and
+    job metadata.  Uses native ``<details>``/``<summary>`` — no JavaScript.
     """
     if not event_log:
         return ""
 
-    rows = event_log[:max_rows]
+    from collections import OrderedDict
+    from datetime import datetime
+
     badge_colors = {
         "SUCCESS": ("#d4edda", "#28a745"),
         "FAILED": ("#f8d7da", "#dc3545"),
@@ -390,6 +392,15 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 20) -> 
             f'background:{bg};color:{fg};font-size:11px;font-weight:600">'
             f'{html.escape(state)}</span>'
         )
+
+    # Group events by exec_job_id, preserving order of most recent event
+    # event_log is already most-recent-first
+    jobs: OrderedDict[str, List[Dict[str, Any]]] = OrderedDict()
+    for ev in event_log:
+        key = ev.get("exec_job_id", "")
+        if key not in jobs:
+            jobs[key] = []
+        jobs[key].append(ev)
 
     # Table header
     th = (
@@ -413,47 +424,83 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 20) -> 
     td = 'style="padding:3px 8px;vertical-align:top"'
     td_mono = 'style="padding:3px 8px;vertical-align:top;font-variant-numeric:tabular-nums"'
 
-    for ev in rows:
-        state = ev.get("state", "")
-        job_id = html.escape(ev.get("exec_job_id", ""))
-        type_desc = html.escape(ev.get("type_desc", ""))
-        start = html.escape(ev.get("start_time", "-"))
-        end = html.escape(ev.get("end_time", "-"))
-        dur = html.escape(ev.get("duration", "-"))
-        mem = html.escape(ev.get("maxrss_fmt", "-"))
+    shown = 0
+    for job_id_raw, evts in jobs.items():
+        if shown >= max_rows:
+            break
+        shown += 1
 
-        # Build expandable detail lines
-        detail_lines: List[str] = []
-        if ev.get("raw_state"):
-            detail_lines.append(f"Raw state: {ev['raw_state']}")
-        if ev.get("node_id"):
-            detail_lines.append(f"Node ID: {ev['node_id']}")
-        if ev.get("transformation"):
-            detail_lines.append(f"Transformation: {ev['transformation']}")
-        if ev.get("task_argv"):
-            detail_lines.append(f"Arguments: {ev['task_argv']}")
-        if ev.get("maxrss") is not None:
-            detail_lines.append(f"Peak RSS: {ev.get('maxrss_fmt', ev['maxrss'])} ({ev['maxrss']} KB)")
-        if ev.get("stdout_file"):
-            detail_lines.append(f"Stdout: {ev['stdout_file']}")
-        if ev.get("stderr_file"):
-            detail_lines.append(f"Stderr: {ev['stderr_file']}")
-        if ev.get("hold_reason"):
-            detail_lines.append(f"Hold reason: {ev['hold_reason']}")
-        if ev.get("timestamp"):
-            from datetime import datetime
-            ts_str = datetime.fromtimestamp(ev["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
-            detail_lines.append(f"Timestamp: {ts_str}")
+        # Latest event is first (most recent state for this job)
+        latest = evts[0]
+        state = latest.get("state", "")
+        job_id = html.escape(job_id_raw)
+        type_desc = html.escape(latest.get("type_desc", ""))
+        start = html.escape(latest.get("start_time", "-"))
+        end = html.escape(latest.get("end_time", "-"))
+        dur = html.escape(latest.get("duration", "-"))
+        mem = html.escape(latest.get("maxrss_fmt", "-"))
 
-        if detail_lines:
-            # Expandable row using <details>/<summary>
-            detail_html = "<br>".join(html.escape(l) for l in detail_lines)
+        # Build expandable details
+        detail_parts: List[str] = []
+
+        # Job metadata section
+        meta_lines: List[str] = []
+        if latest.get("node_id"):
+            meta_lines.append(f"Node ID: {latest['node_id']}")
+        if latest.get("transformation"):
+            meta_lines.append(f"Transformation: {latest['transformation']}")
+        if latest.get("task_argv"):
+            meta_lines.append(f"Arguments: {latest['task_argv']}")
+        if latest.get("maxrss") is not None:
+            meta_lines.append(
+                f"Peak RSS: {latest.get('maxrss_fmt', latest['maxrss'])} "
+                f"({latest['maxrss']} KB)"
+            )
+        if latest.get("stdout_file"):
+            meta_lines.append(f"Stdout: {latest['stdout_file']}")
+        if latest.get("stderr_file"):
+            meta_lines.append(f"Stderr: {latest['stderr_file']}")
+        if latest.get("hold_reason"):
+            meta_lines.append(f"Hold reason: {latest['hold_reason']}")
+
+        if meta_lines:
+            detail_parts.append(
+                '<div style="padding:4px 0;font-size:11px;color:#475569;line-height:1.6">'
+                + "<br>".join(html.escape(l) for l in meta_lines)
+                + "</div>"
+            )
+
+        # State history timeline (all events for this job, most recent first)
+        if len(evts) > 1:
+            detail_parts.append(
+                '<div style="margin-top:4px;font-size:11px;color:#475569">'
+                '<b>State history:</b></div>'
+            )
+            detail_parts.append(
+                '<table style="width:100%;border-collapse:collapse;font-size:11px;'
+                'margin:2px 0 4px 0">'
+            )
+            for hev in evts:
+                hstate = hev.get("state", "")
+                raw = html.escape(hev.get("raw_state", ""))
+                ts = hev.get("timestamp")
+                ts_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "-"
+                detail_parts.append(
+                    f'<tr style="border-bottom:1px solid #f8fafc">'
+                    f'<td style="padding:2px 8px;width:60px">{_badge(hstate)}</td>'
+                    f'<td style="padding:2px 8px;color:#64748b">{raw}</td>'
+                    f'<td style="padding:2px 8px;font-variant-numeric:tabular-nums">{ts_str}</td>'
+                    f"</tr>"
+                )
+            detail_parts.append("</table>")
+
+        if detail_parts:
+            detail_html = "\n".join(detail_parts)
             job_cell = (
                 f'<details style="cursor:pointer">'
                 f'<summary style="list-style:none;white-space:nowrap">'
                 f'\u25b6 {job_id}</summary>'
-                f'<div style="padding:4px 0 2px 16px;font-size:11px;color:#475569;'
-                f'line-height:1.6">{detail_html}</div>'
+                f'<div style="padding:2px 0 2px 16px">{detail_html}</div>'
                 f'</details>'
             )
         else:
@@ -472,10 +519,11 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 20) -> 
         )
 
     parts.append("</tbody></table>")
-    if len(event_log) > max_rows:
+    remaining = len(jobs) - shown
+    if remaining > 0:
         parts.append(
             f'<div style="font-size:11px;color:#94a3b8;padding:4px 8px">'
-            f"Showing {max_rows} of {len(event_log)} events</div>"
+            f"Showing {shown} of {len(jobs)} jobs</div>"
         )
     return "\n".join(parts)
 
