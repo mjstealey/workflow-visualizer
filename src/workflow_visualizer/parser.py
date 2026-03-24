@@ -78,16 +78,43 @@ class WorkflowGraph:
                         meta["version"] = use["version"]
                     file_meta[lfn] = meta
 
+            # Build a display label: prefer explicit nodeLabel, then name,
+            # then id.  If name is shared by multiple jobs, disambiguate
+            # with a short argument hint.
+            label = job.get("nodeLabel", "")
+            jid = job.get("id", "")
+            jname = job.get("name", "")
+            if not label or label == jid:
+                label = jname or jid
             nodes.append({
-                "id": job.get("id", ""),
-                "name": job.get("name", ""),
-                "nodeLabel": job.get("nodeLabel", job.get("id", "")),
+                "id": jid,
+                "name": jname,
+                "nodeLabel": label,
                 "type": job.get("type", "job"),
                 "arguments": job.get("arguments", []),
                 "inputs": inputs,
                 "outputs": outputs,
                 "profiles": job.get("profiles", {}),
             })
+
+        # Disambiguate duplicate labels with argument hints
+        label_counts: Dict[str, int] = {}
+        for n in nodes:
+            label_counts[n["nodeLabel"]] = label_counts.get(n["nodeLabel"], 0) + 1
+        for n in nodes:
+            if label_counts.get(n["nodeLabel"], 1) > 1:
+                # Try to extract a distinguishing argument hint
+                args = n.get("arguments", [])
+                hint = ""
+                for i, a in enumerate(args):
+                    if isinstance(a, str) and a.startswith("--type") and i + 1 < len(args):
+                        hint = str(args[i + 1])
+                        break
+                if not hint and args:
+                    # Use the suffix of the id as a fallback
+                    hint = n["id"].split("ID")[-1].lstrip("0") or n["id"][-4:]
+                if hint:
+                    n["nodeLabel"] = f"{n['nodeLabel']} ({hint})"
 
         # Build edges from jobDependencies
         edges: List[Dict[str, str]] = []

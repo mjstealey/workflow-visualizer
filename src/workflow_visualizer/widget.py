@@ -137,24 +137,74 @@ def _render_dag_svg(
                 else:
                     file_states[lfn] = "pending"
 
-        # Create file nodes and edges through them
+        # Group files by (producer, frozenset(consumers)) to reduce node count.
+        # Files with the same producer and same set of consumers become one
+        # aggregate node (e.g. "38 files") instead of 38 individual nodes.
+        FILE_GROUP_THRESHOLD = 3  # group if more than this many files share same route
+        all_lfns = set(list(producers.keys()) + list(consumers.keys()))
+
+        # Route key → list of LFNs sharing that route
+        route_groups: Dict[tuple, List[str]] = {}
+        for lfn in all_lfns:
+            prod = producers.get(lfn)
+            cons = tuple(sorted(consumers.get(lfn, [])))
+            route_key = (prod, cons)
+            route_groups.setdefault(route_key, []).append(lfn)
+
+        # Create file nodes — aggregate or individual
         adj: Dict[str, List[str]] = {nid: [] for nid in node_map}
         in_deg: Dict[str, int] = {nid: 0 for nid in node_map}
-        for lfn in set(list(producers.keys()) + list(consumers.keys())):
-            fid = "file:" + lfn
-            lbl = lfn if len(lfn) <= 20 else "\u2026" + lfn[-18:]
-            node_map[fid] = {"id": fid, "nodeLabel": lbl, "_isFile": True}
-            file_node_ids.add(fid)
-            adj[fid] = []
-            in_deg[fid] = 0
-            # producer → file
-            if lfn in producers:
-                adj[producers[lfn]].append(fid)
-                in_deg[fid] += 1
-            # file → consumers
-            for cid in consumers.get(lfn, []):
-                adj[fid].append(cid)
-                in_deg[cid] = in_deg.get(cid, 0) + 1
+
+        for (prod, cons_tuple), lfns in route_groups.items():
+            if len(lfns) > FILE_GROUP_THRESHOLD:
+                # Aggregate node
+                fid = f"filegroup:{prod or 'input'}:{','.join(cons_tuple) or 'none'}"
+                # Determine aggregate state from individual file states
+                states_set = {file_states.get(l, "pending") for l in lfns}
+                if "failed" in states_set:
+                    agg_state = "failed"
+                elif "staging" in states_set:
+                    agg_state = "staging"
+                elif "in_use" in states_set:
+                    agg_state = "in_use"
+                elif all(s == "available" for s in states_set):
+                    agg_state = "available"
+                else:
+                    agg_state = "pending"
+                file_states[fid] = agg_state
+
+                lbl = f"{len(lfns)} files"
+                node_map[fid] = {
+                    "id": fid, "nodeLabel": lbl, "_isFile": True,
+                    "_file_count": len(lfns),
+                    "_file_samples": sorted(lfns)[:3],
+                }
+                file_node_ids.add(fid)
+                adj[fid] = []
+                in_deg[fid] = 0
+                if prod and prod in adj:
+                    adj[prod].append(fid)
+                    in_deg[fid] += 1
+                for cid in cons_tuple:
+                    if cid in adj:
+                        adj[fid].append(cid)
+                        in_deg[cid] = in_deg.get(cid, 0) + 1
+            else:
+                # Individual file nodes
+                for lfn in lfns:
+                    fid = "file:" + lfn
+                    lbl = lfn if len(lfn) <= 20 else "\u2026" + lfn[-18:]
+                    node_map[fid] = {"id": fid, "nodeLabel": lbl, "_isFile": True}
+                    file_node_ids.add(fid)
+                    adj[fid] = []
+                    in_deg[fid] = 0
+                    if lfn in producers and producers[lfn] in adj:
+                        adj[producers[lfn]].append(fid)
+                        in_deg[fid] += 1
+                    for cid in consumers.get(lfn, []):
+                        if cid in adj:
+                            adj[fid].append(cid)
+                            in_deg[cid] = in_deg.get(cid, 0) + 1
     else:
         # Direct compute-to-compute edges
         adj = {nid: [] for nid in node_map}
@@ -260,8 +310,12 @@ def _render_dag_svg(
         is_file = nid in file_node_ids
         if is_file:
             nw, nh, rx = FILE_W, FILE_H, 2
-            lfn = nid.removeprefix("file:")
-            fstate = file_states.get(lfn, "pending") if show_files else ""
+            # For grouped nodes, state is stored under the group fid
+            if nid.startswith("filegroup:"):
+                fstate = file_states.get(nid, "pending")
+            else:
+                lfn = nid.removeprefix("file:")
+                fstate = file_states.get(lfn, "pending") if show_files else ""
             color = FILE_COLORS.get(fstate, default_file_color)
             font_size = 10
             state = ""
@@ -281,17 +335,31 @@ def _render_dag_svg(
         # Build tooltip text
         tip_lines: List[str] = []
         if is_file:
-            lfn = nid.removeprefix("file:")
-            tip_lines.append(f"File: {lfn}")
-            if fstate:
-                tip_lines.append(f"Status: {fstate.replace('_', ' ')}")
-            fm = file_meta.get(lfn, {})
-            if fm.get("type"):
-                tip_lines.append(f"Type: {fm['type']}")
-            if fm.get("size") is not None:
-                tip_lines.append(f"Size: {fm['size']}")
-            if fm.get("stageOut") is not None:
-                tip_lines.append(f"Stage out: {fm['stageOut']}")
+            nd = node_map[nid]
+            if nd.get("_file_count"):
+                # Aggregate file group
+                tip_lines.append(f"Files: {nd['_file_count']}")
+                if fstate:
+                    tip_lines.append(f"Status: {fstate.replace('_', ' ')}")
+                samples = nd.get("_file_samples", [])
+                if samples:
+                    tip_lines.append("Examples:")
+                    for s in samples:
+                        tip_lines.append(f"  {s}")
+                    if nd["_file_count"] > len(samples):
+                        tip_lines.append(f"  ... and {nd['_file_count'] - len(samples)} more")
+            else:
+                lfn = nid.removeprefix("file:")
+                tip_lines.append(f"File: {lfn}")
+                if fstate:
+                    tip_lines.append(f"Status: {fstate.replace('_', ' ')}")
+                fm = file_meta.get(lfn, {})
+                if fm.get("type"):
+                    tip_lines.append(f"Type: {fm['type']}")
+                if fm.get("size") is not None:
+                    tip_lines.append(f"Size: {fm['size']}")
+                if fm.get("stageOut") is not None:
+                    tip_lines.append(f"Stage out: {fm['stageOut']}")
         else:
             nd = node_map[nid]
             tip_lines.append(f"ID: {nid}")
