@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import html
-import json
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +16,181 @@ from .parser import WorkflowGraph
 from .state import STATE_COLORS
 
 _HERE = Path(__file__).parent
+
+# ── Pure-Python DAG layout → SVG ────────────────────────────────────────────
+
+
+def _topo_layers(
+    node_ids: List[str],
+    adj: Dict[str, List[str]],
+    in_deg: Dict[str, int],
+) -> List[List[str]]:
+    """Assign nodes to layers via a Kahn-style topological sort."""
+    layers: List[List[str]] = []
+    remaining = dict(in_deg)
+    while True:
+        layer = [n for n in node_ids if remaining.get(n, 0) == 0 and n in remaining]
+        if not layer:
+            break
+        layers.append(layer)
+        for n in layer:
+            del remaining[n]
+            for child in adj.get(n, []):
+                if child in remaining:
+                    remaining[child] -= 1
+    return layers
+
+
+def _render_dag_svg(
+    graph_data: Dict[str, Any],
+    job_states: Dict[str, str],
+    state_colors: Dict[str, Dict[str, str]],
+    show_files: bool,
+) -> str:
+    """Lay out a DAG and return a self-contained SVG string (no JS)."""
+    nodes_raw: List[Dict[str, Any]] = graph_data.get("nodes", [])
+    edges_raw: List[Dict[str, Any]] = graph_data.get("edges", [])
+
+    if not nodes_raw:
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="60">'
+            '<text x="200" y="30" text-anchor="middle" font-family="system-ui,sans-serif" '
+            'font-size="14" fill="#64748b">No workflow data loaded</text></svg>'
+        )
+
+    # Filter to compute nodes only (unless show_files is True)
+    node_map: Dict[str, Dict[str, Any]] = {}
+    for n in nodes_raw:
+        td = n.get("type_desc", "")
+        if td == "" or td == "compute":
+            node_map[n["id"]] = n
+
+    # Build adjacency and in-degree for compute-to-compute edges
+    adj: Dict[str, List[str]] = {nid: [] for nid in node_map}
+    in_deg: Dict[str, int] = {nid: 0 for nid in node_map}
+    for e in edges_raw:
+        s, t = e["source"], e["target"]
+        if s in node_map and t in node_map:
+            adj[s].append(t)
+            in_deg[t] = in_deg.get(t, 0) + 1
+
+    # Layout parameters
+    NODE_W, NODE_H = 150, 40
+    H_GAP, V_GAP = 40, 60
+    MARGIN = 30
+
+    # Assign layers
+    layers = _topo_layers(list(node_map.keys()), adj, in_deg)
+
+    # Handle nodes not reached by topo sort (cycles or isolates)
+    placed = {n for layer in layers for n in layer}
+    orphans = [nid for nid in node_map if nid not in placed]
+    if orphans:
+        layers.append(orphans)
+
+    # Compute positions (center of each node)
+    pos: Dict[str, tuple] = {}
+    max_layer_w = 0
+    for layer in layers:
+        lw = len(layer) * NODE_W + (len(layer) - 1) * H_GAP
+        if lw > max_layer_w:
+            max_layer_w = lw
+
+    for li, layer in enumerate(layers):
+        lw = len(layer) * NODE_W + (len(layer) - 1) * H_GAP
+        x_offset = MARGIN + (max_layer_w - lw) / 2
+        cy = MARGIN + li * (NODE_H + V_GAP) + NODE_H / 2
+        for ni, nid in enumerate(layer):
+            cx = x_offset + ni * (NODE_W + H_GAP) + NODE_W / 2
+            pos[nid] = (cx, cy)
+
+    svg_w = max_layer_w + 2 * MARGIN
+    svg_h = len(layers) * (NODE_H + V_GAP) - V_GAP + 2 * MARGIN
+    # Reserve space for legend
+    legend_h = 28
+    total_h = svg_h + legend_h
+
+    default_color = {"fill": "#e0f2fe", "stroke": "#0284c7"}
+    unknown_color = {"fill": "#e0e0e0", "stroke": "#999999"}
+
+    parts: List[str] = []
+    parts.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{max(svg_w, 400)}" height="{total_h}" '
+        f'style="font-family:system-ui,-apple-system,sans-serif;background:#fff;'
+        f'border:1px solid #e2e8f0;border-radius:8px">'
+    )
+
+    # Arrowhead marker
+    parts.append(
+        '<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" '
+        'markerWidth="8" markerHeight="8" orient="auto">'
+        '<path d="M0,0 L10,5 L0,10 Z" fill="#94a3b8"/></marker></defs>'
+    )
+
+    # Edges
+    for e in edges_raw:
+        s, t = e["source"], e["target"]
+        if s in pos and t in pos:
+            sx, sy = pos[s]
+            tx, ty = pos[t]
+            # Start at bottom of source, end at top of target
+            y1 = sy + NODE_H / 2
+            y2 = ty - NODE_H / 2
+            if abs(y2 - y1) < 1:
+                # Same layer — draw a slight curve
+                parts.append(
+                    f'<line x1="{sx}" y1="{y1}" x2="{tx}" y2="{y2}" '
+                    f'stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ah)"/>'
+                )
+            else:
+                # Vertical with slight S-curve via cubic bezier
+                my = (y1 + y2) / 2
+                parts.append(
+                    f'<path d="M{sx},{y1} C{sx},{my} {tx},{my} {tx},{y2}" '
+                    f'fill="none" stroke="#94a3b8" stroke-width="1.5" '
+                    f'marker-end="url(#ah)"/>'
+                )
+
+    # Nodes
+    for nid, (cx, cy) in pos.items():
+        state = job_states.get(nid, "UNSUBMITTED")
+        color = state_colors.get(state, default_color)
+        x = cx - NODE_W / 2
+        y = cy - NODE_H / 2
+        label = html.escape(node_map[nid].get("nodeLabel", nid))
+        # Truncate long labels
+        if len(label) > 20:
+            label = label[:18] + "\u2026"
+        parts.append(
+            f'<rect x="{x}" y="{y}" width="{NODE_W}" height="{NODE_H}" '
+            f'rx="6" ry="6" fill="{color["fill"]}" stroke="{color["stroke"]}" '
+            f'stroke-width="1.5"/>'
+        )
+        parts.append(
+            f'<text x="{cx}" y="{cy}" text-anchor="middle" '
+            f'dominant-baseline="central" font-size="12" fill="#1e293b">'
+            f'{label}</text>'
+        )
+
+    # Legend
+    legend_states = ["UNSUBMITTED", "QUEUED", "RUNNING", "SUCCESS", "FAILED", "HELD"]
+    lx = MARGIN
+    ly = svg_h + 4
+    for st in legend_states:
+        c = state_colors.get(st, unknown_color)
+        parts.append(
+            f'<rect x="{lx}" y="{ly}" width="10" height="10" rx="2" '
+            f'fill="{c["fill"]}" stroke="{c["stroke"]}" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{lx + 14}" y="{ly + 9}" font-size="10" fill="#475569">'
+            f'{st}</text>'
+        )
+        lx += 14 + len(st) * 6.5 + 12
+
+    parts.append("</svg>")
+    return "\n".join(parts)
 
 
 class WorkflowVisualizerWidget(anywidget.AnyWidget):
@@ -247,215 +420,34 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
 
         self.send({"type": "action_result", "action": action, "result": result})
 
-    def _repr_mimebundle_(self, **kwargs: Any) -> Any:
+    def _repr_mimebundle_(self, **kwargs: Any) -> Dict[str, Any]:
         """Choose the best display representation for the current environment.
 
-        Always includes ``text/html`` with ``isolated: True`` metadata so that
-        environments which reject the widget MIME type as untrusted (e.g.
-        classic Jupyter Notebook on ACCESS Open OnDemand) still render the DAG.
-        The ``isolated`` flag tells classic Notebook to render the HTML inside
-        an iframe, bypassing its script-tag sanitizer.
+        Tries the anywidget widget-view MIME type first.  If the comm channel
+        is unavailable (e.g. classic Notebook on ACCESS Open OnDemand), falls
+        back to a pure SVG rendering computed entirely server-side in Python —
+        no JavaScript required, so it survives classic Notebook's HTML sanitizer.
         """
-        data: Dict[str, Any] = {"text/html": self._repr_html_()}
-        metadata: Dict[str, Any] = {"text/html": {"isolated": True}}
         try:
-            widget_bundle = super()._repr_mimebundle_(**kwargs)
-            if isinstance(widget_bundle, tuple):
-                wb_data, wb_meta = widget_bundle
-                data.update(wb_data)
-                metadata.update(wb_meta)
-            elif isinstance(widget_bundle, dict) and widget_bundle:
-                data.update(widget_bundle)
+            bundle = super()._repr_mimebundle_(**kwargs)
+            if bundle and "application/vnd.jupyter.widget-view+json" in bundle:
+                return bundle
         except Exception:
             pass
-        return data, metadata
+        return {"text/html": self._repr_html_()}
 
     def _repr_html_(self) -> str:
-        """Inline HTML/SVG fallback for environments where anywidget ESM fails.
+        """Pure SVG fallback for environments where anywidget ESM fails.
 
-        Renders the workflow DAG using D3 and dagre loaded as ES modules from
-        esm.sh.  This method is called by Jupyter's display machinery when the
-        anywidget comm channel is unavailable (e.g. wrong MIME type behind a
-        reverse proxy).
+        Computes a layered DAG layout entirely in Python and emits inline SVG.
+        No JavaScript, no external imports — works in untrusted classic Notebook.
         """
-        container_id = f"wfviz-{uuid.uuid4().hex[:12]}"
-        graph_json = html.escape(json.dumps(self.graph_data), quote=True)
-        job_states_json = html.escape(json.dumps(dict(self.job_states)), quote=True)
-        colors_json = html.escape(json.dumps(dict(self.state_colors)), quote=True)
-        show_files_js = "true" if self.show_files else "false"
-
-        return f"""\
-<div id="{container_id}" style="width:800px;max-width:100%;height:600px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;position:relative;font-family:system-ui,-apple-system,sans-serif">
-  <svg width="100%" height="100%"><defs></defs><g class="dag-content"></g></svg>
-</div>
-<script type="module">
-import * as d3 from "https://esm.sh/d3@7";
-import dagre from "https://esm.sh/dagre@0.8.5";
-
-const graphData   = JSON.parse({json.dumps(json.dumps(self.graph_data))});
-const jobStates   = JSON.parse({json.dumps(json.dumps(dict(self.job_states)))});
-const stateColors = JSON.parse({json.dumps(json.dumps(dict(self.state_colors)))});
-const showFiles   = {show_files_js};
-const containerId = "{container_id}";
-
-const DEFAULT_FILL   = "#e0f2fe";
-const DEFAULT_STROKE = "#0284c7";
-const UNKNOWN_COLOR  = {{ fill: "#e0e0e0", stroke: "#999999" }};
-
-function getColor(state) {{
-  return stateColors[state] || UNKNOWN_COLOR;
-}}
-
-// ── Build dagre graph ────────────────────────────────────────────────────
-const g = new dagre.graphlib.Graph();
-g.setGraph({{ rankdir: "TB", ranksep: 60, nodesep: 40, marginx: 30, marginy: 30 }});
-g.setDefaultEdgeLabel(() => ({{}}));
-
-const nodes = graphData.nodes || [];
-const edges = graphData.edges || [];
-const fileMeta = (graphData.metadata && graphData.metadata.file_meta) || {{}};
-
-for (const node of nodes) {{
-  const td = node.type_desc || "";
-  if (td !== "" && td !== "compute") continue;
-  const label = node.nodeLabel || node.id || "";
-  g.setNode(node.id, {{ label, width: 150, height: 40, data: node }});
-}}
-
-if (!showFiles) {{
-  for (const edge of edges) {{
-    if (g.hasNode(edge.source) && g.hasNode(edge.target)) {{
-      g.setEdge(edge.source, edge.target);
-    }}
-  }}
-}} else {{
-  const fileNodes = new Set();
-  for (const node of nodes) {{
-    if (!g.hasNode(node.id)) continue;
-    for (const lfn of (node.outputs || [])) {{
-      if (!fileNodes.has(lfn)) {{
-        const meta = fileMeta[lfn] || {{ lfn }};
-        const lbl = lfn.length > 20 ? "..." + lfn.slice(-18) : lfn;
-        g.setNode("file:" + lfn, {{ label: lbl, width: 130, height: 26, data: {{ _isFile: true, lfn, ...meta }} }});
-        fileNodes.add(lfn);
-      }}
-      g.setEdge(node.id, "file:" + lfn);
-    }}
-    for (const lfn of (node.inputs || [])) {{
-      if (!fileNodes.has(lfn)) {{
-        const meta = fileMeta[lfn] || {{ lfn }};
-        const lbl = lfn.length > 20 ? "..." + lfn.slice(-18) : lfn;
-        g.setNode("file:" + lfn, {{ label: lbl, width: 130, height: 26, data: {{ _isFile: true, lfn, ...meta }} }});
-        fileNodes.add(lfn);
-      }}
-      g.setEdge("file:" + lfn, node.id);
-    }}
-  }}
-}}
-
-dagre.layout(g);
-
-// ── Render (deferred until container has layout dimensions) ──────────────
-function renderGraph() {{
-  const container = d3.select("#" + containerId);
-  if (!container.node()) return;
-  const svg = container.select("svg");
-  const gContent = svg.select("g.dag-content");
-  const defs = svg.select("defs");
-
-  // Arrowhead marker
-  defs.append("marker")
-    .attr("id", containerId + "-arrow")
-    .attr("viewBox", "0 0 10 10")
-    .attr("refX", 9).attr("refY", 5)
-    .attr("markerWidth", 8).attr("markerHeight", 8)
-    .attr("orient", "auto-start-reverse")
-    .append("path").attr("d", "M 0 0 L 10 5 L 0 10 z").attr("fill", "#94a3b8");
-
-  // Edges
-  const line = d3.line().x(d => d.x).y(d => d.y).curve(d3.curveBasis);
-  for (const e of g.edges()) {{
-    const edgeObj = g.edge(e);
-    gContent.append("path")
-      .attr("d", line(edgeObj.points))
-      .attr("fill", "none")
-      .attr("stroke", "#94a3b8")
-      .attr("stroke-width", 1.5)
-      .attr("marker-end", `url(#${{containerId}}-arrow)`);
-  }}
-
-  // Nodes
-  for (const id of g.nodes()) {{
-    const n = g.node(id);
-    if (!n) continue;
-    const isFile = n.data && n.data._isFile;
-    const state = jobStates[id] || "UNSUBMITTED";
-    const color = isFile
-      ? {{ fill: "#f8fafc", stroke: "#94a3b8" }}
-      : (stateColors[state] || {{ fill: DEFAULT_FILL, stroke: DEFAULT_STROKE }});
-
-    const nodeG = gContent.append("g")
-      .attr("transform", `translate(${{n.x - n.width / 2}},${{n.y - n.height / 2}})`);
-
-    nodeG.append("rect")
-      .attr("width", n.width).attr("height", n.height)
-      .attr("rx", isFile ? 2 : 6).attr("ry", isFile ? 2 : 6)
-      .attr("fill", color.fill).attr("stroke", color.stroke).attr("stroke-width", 1.5);
-
-    if (isFile) {{
-      nodeG.append("rect")
-        .attr("x", n.width - 12).attr("y", 0)
-        .attr("width", 12).attr("height", 10)
-        .attr("fill", color.stroke).attr("opacity", 0.25);
-    }}
-
-    nodeG.append("text")
-      .attr("x", n.width / 2).attr("y", n.height / 2)
-      .attr("text-anchor", "middle").attr("dominant-baseline", "central")
-      .attr("font-size", isFile ? "10px" : "12px")
-      .attr("font-family", "system-ui,-apple-system,sans-serif")
-      .attr("fill", "#1e293b")
-      .text(n.label);
-  }}
-
-  // ── Zoom / pan ─────────────────────────────────────────────────────────
-  const zoom = d3.zoom()
-    .scaleExtent([0.2, 4])
-    .on("zoom", (event) => gContent.attr("transform", event.transform));
-  svg.call(zoom);
-
-  // Auto-center using resolved dimensions (fallback to 800x600)
-  const gGraph = g.graph();
-  const el = container.node();
-  const cw = el.clientWidth || 800;
-  const ch = el.clientHeight || 600;
-  const gw = gGraph.width || 1;
-  const gh = gGraph.height || 1;
-  const scale = Math.min(cw / gw, ch / gh, 1) * 0.9;
-  const tx = (cw - gw * scale) / 2;
-  const ty = (ch - gh * scale) / 2;
-  svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
-
-  // ── Legend ──────────────────────────────────────────────────────────────
-  const legendStates = ["UNSUBMITTED", "QUEUED", "RUNNING", "SUCCESS", "FAILED", "HELD"];
-  const legend = container.append("div")
-    .style("position", "absolute").style("top", "8px").style("right", "8px")
-    .style("display", "flex").style("gap", "8px").style("flex-wrap", "wrap")
-    .style("font-size", "11px").style("color", "#475569");
-  for (const st of legendStates) {{
-    const c = stateColors[st] || UNKNOWN_COLOR;
-    const item = legend.append("div").style("display", "flex").style("align-items", "center").style("gap", "3px");
-    item.append("div")
-      .style("width", "10px").style("height", "10px").style("border-radius", "2px")
-      .style("background", c.fill).style("border", `1px solid ${{c.stroke}}`);
-    item.append("span").text(st);
-  }}
-}}
-
-// Defer rendering — setTimeout gives ES module imports time to resolve
-// and ensures the container has final dimensions in the DOM.
-setTimeout(renderGraph, 150);
-</script>"""
+        return _render_dag_svg(
+            self.graph_data,
+            dict(self.job_states),
+            dict(self.state_colors),
+            self.show_files,
+        )
 
     def close(self) -> None:
         """Clean up resources on widget close."""
