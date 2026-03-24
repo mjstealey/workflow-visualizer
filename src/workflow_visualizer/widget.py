@@ -63,27 +63,62 @@ def _render_dag_svg(
             'font-size="14" fill="#64748b">No workflow data loaded</text></svg>'
         )
 
-    # Filter to compute nodes only (unless show_files is True)
+    # Build compute node map
     node_map: Dict[str, Dict[str, Any]] = {}
     for n in nodes_raw:
         td = n.get("type_desc", "")
         if td == "" or td == "compute":
             node_map[n["id"]] = n
 
-    # Build adjacency and in-degree for compute-to-compute edges
-    adj: Dict[str, List[str]] = {nid: [] for nid in node_map}
-    in_deg: Dict[str, int] = {nid: 0 for nid in node_map}
-    for e in edges_raw:
-        s, t = e["source"], e["target"]
-        if s in node_map and t in node_map:
-            adj[s].append(t)
-            in_deg[t] = in_deg.get(t, 0) + 1
+    # Track which node IDs are file nodes (for rendering style)
+    file_node_ids: set = set()
 
     # Layout parameters
     NODE_W, NODE_H = 150, 40
+    FILE_W, FILE_H = 130, 26
     H_GAP, V_GAP = 40, 60
     MARGIN = 30
     MAX_COLS = 5  # wrap layers wider than this into sub-rows
+
+    if show_files:
+        # Insert file nodes between compute nodes via input/output LFNs.
+        # producer: lfn → compute node id that outputs it
+        # consumer: lfn → list of compute node ids that input it
+        producers: Dict[str, str] = {}
+        consumers: Dict[str, List[str]] = {}
+        for nid, n in node_map.items():
+            for lfn in n.get("outputs", []):
+                producers[lfn] = nid
+            for lfn in n.get("inputs", []):
+                consumers.setdefault(lfn, []).append(nid)
+
+        # Create file nodes and edges through them
+        adj: Dict[str, List[str]] = {nid: [] for nid in node_map}
+        in_deg: Dict[str, int] = {nid: 0 for nid in node_map}
+        for lfn in set(list(producers.keys()) + list(consumers.keys())):
+            fid = "file:" + lfn
+            lbl = lfn if len(lfn) <= 20 else "\u2026" + lfn[-18:]
+            node_map[fid] = {"id": fid, "nodeLabel": lbl, "_isFile": True}
+            file_node_ids.add(fid)
+            adj[fid] = []
+            in_deg[fid] = 0
+            # producer → file
+            if lfn in producers:
+                adj[producers[lfn]].append(fid)
+                in_deg[fid] += 1
+            # file → consumers
+            for cid in consumers.get(lfn, []):
+                adj[fid].append(cid)
+                in_deg[cid] = in_deg.get(cid, 0) + 1
+    else:
+        # Direct compute-to-compute edges
+        adj = {nid: [] for nid in node_map}
+        in_deg = {nid: 0 for nid in node_map}
+        for e in edges_raw:
+            s, t = e["source"], e["target"]
+            if s in node_map and t in node_map:
+                adj[s].append(t)
+                in_deg[t] = in_deg.get(t, 0) + 1
 
     # Assign layers
     layers = _topo_layers(list(node_map.keys()), adj, in_deg)
@@ -120,6 +155,13 @@ def _render_dag_svg(
             cx = x_offset + ni * (NODE_W + H_GAP) + NODE_W / 2
             pos[nid] = (cx, cy)
 
+    # Build edges list for rendering (from adjacency, since show_files rewires edges)
+    render_edges: List[tuple] = []
+    for s, targets in adj.items():
+        for t in targets:
+            if s in pos and t in pos:
+                render_edges.append((s, t))
+
     svg_w = max(max_layer_w + 2 * MARGIN, 400)
     svg_h = len(wrapped_layers) * (NODE_H + V_GAP) - V_GAP + 2 * MARGIN
     # Reserve space for legend
@@ -146,44 +188,52 @@ def _render_dag_svg(
     )
 
     # Edges
-    for e in edges_raw:
-        s, t = e["source"], e["target"]
-        if s in pos and t in pos:
-            sx, sy = pos[s]
-            tx, ty = pos[t]
-            # Start at bottom of source, end at top of target
-            y1 = sy + NODE_H / 2
-            y2 = ty - NODE_H / 2
-            if abs(y2 - y1) < 1:
-                parts.append(
-                    f'<line x1="{sx}" y1="{y1}" x2="{tx}" y2="{y2}" '
-                    f'stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ah)"/>'
-                )
-            else:
-                my = (y1 + y2) / 2
-                parts.append(
-                    f'<path d="M{sx},{y1} C{sx},{my} {tx},{my} {tx},{y2}" '
-                    f'fill="none" stroke="#94a3b8" stroke-width="1.5" '
-                    f'marker-end="url(#ah)"/>'
-                )
+    for s, t in render_edges:
+        sx, sy = pos[s]
+        tx, ty = pos[t]
+        sh = FILE_H if s in file_node_ids else NODE_H
+        th = FILE_H if t in file_node_ids else NODE_H
+        y1 = sy + sh / 2
+        y2 = ty - th / 2
+        if abs(y2 - y1) < 1:
+            parts.append(
+                f'<line x1="{sx}" y1="{y1}" x2="{tx}" y2="{y2}" '
+                f'stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ah)"/>'
+            )
+        else:
+            my = (y1 + y2) / 2
+            parts.append(
+                f'<path d="M{sx},{y1} C{sx},{my} {tx},{my} {tx},{y2}" '
+                f'fill="none" stroke="#94a3b8" stroke-width="1.5" '
+                f'marker-end="url(#ah)"/>'
+            )
 
     # Nodes
+    file_color = {"fill": "#f8fafc", "stroke": "#94a3b8"}
     for nid, (cx, cy) in pos.items():
-        state = job_states.get(nid, "UNSUBMITTED")
-        color = state_colors.get(state, default_color)
-        x = cx - NODE_W / 2
-        y = cy - NODE_H / 2
+        is_file = nid in file_node_ids
+        if is_file:
+            nw, nh, rx = FILE_W, FILE_H, 2
+            color = file_color
+            font_size = 10
+        else:
+            nw, nh, rx = NODE_W, NODE_H, 6
+            state = job_states.get(nid, "UNSUBMITTED")
+            color = state_colors.get(state, default_color)
+            font_size = 12
+        x = cx - nw / 2
+        y = cy - nh / 2
         label = html.escape(node_map[nid].get("nodeLabel", nid))
         if len(label) > 20:
             label = label[:18] + "\u2026"
         parts.append(
-            f'<rect x="{x}" y="{y}" width="{NODE_W}" height="{NODE_H}" '
-            f'rx="6" ry="6" fill="{color["fill"]}" stroke="{color["stroke"]}" '
+            f'<rect x="{x}" y="{y}" width="{nw}" height="{nh}" '
+            f'rx="{rx}" ry="{rx}" fill="{color["fill"]}" stroke="{color["stroke"]}" '
             f'stroke-width="1.5"/>'
         )
         parts.append(
             f'<text x="{cx}" y="{cy}" text-anchor="middle" '
-            f'dominant-baseline="central" font-size="12" fill="#1e293b">'
+            f'dominant-baseline="central" font-size="{font_size}" fill="#1e293b">'
             f'{label}</text>'
         )
 
