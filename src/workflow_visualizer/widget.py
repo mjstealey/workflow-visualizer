@@ -250,17 +250,18 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
     def _repr_mimebundle_(self, **kwargs: Any) -> Dict[str, Any]:
         """Choose the best display representation for the current environment.
 
-        Tries the anywidget widget-view MIME type first.  If the comm channel
-        is unavailable (e.g. reverse-proxy MIME issues on ACCESS Open OnDemand),
-        falls back to an inline ``text/html`` rendering via :meth:`_repr_html_`.
+        Always includes ``text/html`` as a fallback so that environments which
+        reject the widget MIME type as untrusted (e.g. classic Jupyter Notebook
+        on ACCESS Open OnDemand) can still render the inline DAG visualization.
         """
+        bundle: Dict[str, Any] = {"text/html": self._repr_html_()}
         try:
-            bundle = super()._repr_mimebundle_(**kwargs)
-            if bundle and "application/vnd.jupyter.widget-view+json" in bundle:
-                return bundle
+            widget_bundle = super()._repr_mimebundle_(**kwargs)
+            if widget_bundle:
+                bundle.update(widget_bundle)
         except Exception:
             pass
-        return {"text/html": self._repr_html_()}
+        return bundle
 
     def _repr_html_(self) -> str:
         """Inline HTML/SVG fallback for environments where anywidget ESM fails.
@@ -277,7 +278,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         show_files_js = "true" if self.show_files else "false"
 
         return f"""\
-<div id="{container_id}" style="min-width:800px;width:100%;height:600px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;position:relative;font-family:system-ui,-apple-system,sans-serif">
+<div id="{container_id}" style="width:800px;max-width:100%;height:600px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#fff;position:relative;font-family:system-ui,-apple-system,sans-serif">
   <svg width="100%" height="100%"><defs></defs><g class="dag-content"></g></svg>
 </div>
 <script type="module">
@@ -444,8 +445,9 @@ function renderGraph() {{
   }}
 }}
 
-// Defer rendering so the container has final dimensions in the DOM
-requestAnimationFrame(() => requestAnimationFrame(renderGraph));
+// Defer rendering — setTimeout gives ES module imports time to resolve
+// and ensures the container has final dimensions in the DOM.
+setTimeout(renderGraph, 150);
 </script>"""
 
     def close(self) -> None:
