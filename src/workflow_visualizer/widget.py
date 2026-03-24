@@ -259,6 +259,71 @@ def _render_dag_svg(
     return "\n".join(parts)
 
 
+def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 20) -> str:
+    """Render the event log as an HTML table (most recent first)."""
+    if not event_log:
+        return ""
+
+    rows = event_log[:max_rows]
+    # State badge colors (inline, no CSS classes needed)
+    badge_colors = {
+        "SUCCESS": ("#d4edda", "#28a745"),
+        "FAILED": ("#f8d7da", "#dc3545"),
+        "RUNNING": ("#d1ecf1", "#17a2b8"),
+        "QUEUED": ("#fff3cd", "#ffc107"),
+        "HELD": ("#e8d5f5", "#9b59b6"),
+        "PRE": ("#cce5ff", "#4a90d9"),
+        "POST": ("#cce5ff", "#4a90d9"),
+        "DONE": ("#d4edda", "#28a745"),
+    }
+
+    parts = [
+        '<table style="width:100%;border-collapse:collapse;font-family:system-ui,sans-serif;'
+        'font-size:12px;margin-top:8px">',
+        "<thead><tr>",
+        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">Job</th>',
+        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">Type</th>',
+        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">State</th>',
+        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">Start</th>',
+        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">End</th>',
+        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">Duration</th>',
+        "</tr></thead><tbody>",
+    ]
+
+    for ev in rows:
+        state = ev.get("state", "")
+        bg, fg = badge_colors.get(state, ("#e0e0e0", "#666"))
+        badge = (
+            f'<span style="display:inline-block;padding:1px 6px;border-radius:3px;'
+            f'background:{bg};color:{fg};font-size:11px;font-weight:600">'
+            f'{html.escape(state)}</span>'
+        )
+        job_id = html.escape(ev.get("exec_job_id", ""))
+        type_desc = html.escape(ev.get("type_desc", ""))
+        start = html.escape(ev.get("start_time", "-"))
+        end = html.escape(ev.get("end_time", "-"))
+        dur = html.escape(ev.get("duration", "-"))
+
+        parts.append(
+            f'<tr style="border-bottom:1px solid #f1f5f9">'
+            f'<td style="padding:3px 8px;white-space:nowrap">{job_id}</td>'
+            f'<td style="padding:3px 8px;color:#64748b">{type_desc}</td>'
+            f'<td style="padding:3px 8px">{badge}</td>'
+            f'<td style="padding:3px 8px;font-variant-numeric:tabular-nums">{start}</td>'
+            f'<td style="padding:3px 8px;font-variant-numeric:tabular-nums">{end}</td>'
+            f'<td style="padding:3px 8px;font-variant-numeric:tabular-nums">{dur}</td>'
+            f"</tr>"
+        )
+
+    parts.append("</tbody></table>")
+    if len(event_log) > max_rows:
+        parts.append(
+            f'<div style="font-size:11px;color:#94a3b8;padding:4px 8px">'
+            f"Showing {max_rows} of {len(event_log)} events</div>"
+        )
+    return "\n".join(parts)
+
+
 class WorkflowVisualizerWidget(anywidget.AnyWidget):
     """Interactive DAG visualization of a Pegasus workflow.
 
@@ -558,9 +623,10 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
                     f' <span style="color:#94a3b8;font-size:12px">'
                     f"(refreshing every {refresh}s, Ctrl-C to stop)</span>"
                 )
+                event_table = _render_event_table(list(self.event_log))
                 display(HTML(
                     f'<div style="font-family:system-ui,sans-serif;margin-bottom:6px">'
-                    f'{header}</div>{svg}'
+                    f'{header}</div>{svg}{event_table}'
                 ))
 
                 # Stop if workflow reached a terminal state
@@ -590,7 +656,9 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             self.show_files = not self.show_files
         else:
             self.show_files = show_files
-        display(HTML(self._repr_html_()))
+        svg = self._repr_html_()
+        event_table = _render_event_table(list(self.event_log))
+        display(HTML(f"{svg}{event_table}"))
 
     def summary(self) -> None:
         """Print a text summary of the workflow graph."""
