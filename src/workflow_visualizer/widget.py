@@ -80,6 +80,24 @@ def _render_dag_svg(
     MARGIN = 30
     MAX_COLS = 5  # wrap layers wider than this into sub-rows
 
+    # File state colors
+    FILE_COLORS = {
+        "pending":    {"fill": "#f1f5f9", "stroke": "#cbd5e1"},           # gray
+        "staging":    {"fill": "#cce5ff", "stroke": "#4a90d9"},           # blue (PRE)
+        "available":  {"fill": "#d4edda", "stroke": "#28a745"},           # green
+        "in_use":     {"fill": "#d1ecf1", "stroke": "#17a2b8"},           # cyan (RUNNING)
+        "staged_out": {"fill": "#d4edda", "stroke": "#28a745"},           # green
+        "failed":     {"fill": "#f8d7da", "stroke": "#dc3545"},           # red
+        "cleaned":    {"fill": "#f8fafc", "stroke": "#cbd5e1"},           # faded
+    }
+
+    # Helper: get display state string for a compute node from job_states
+    def _node_state(nid: str) -> str:
+        js = job_states.get(nid, "UNSUBMITTED")
+        return js["state"] if isinstance(js, dict) else js
+
+    file_states: Dict[str, str] = {}
+
     if show_files:
         # Insert file nodes between compute nodes via input/output LFNs.
         # producer: lfn → compute node id that outputs it
@@ -91,6 +109,33 @@ def _render_dag_svg(
                 producers[lfn] = nid
             for lfn in n.get("inputs", []):
                 consumers.setdefault(lfn, []).append(nid)
+
+        # Infer file states from connected compute job states
+        file_states: Dict[str, str] = {}
+        for lfn in set(list(producers.keys()) + list(consumers.keys())):
+            if lfn in producers:
+                # File is produced by a compute job
+                ps = _node_state(producers[lfn])
+                if ps in ("SUCCESS", "DONE"):
+                    # Check if any consumer is running → "in_use"
+                    consumer_states = [_node_state(c) for c in consumers.get(lfn, [])]
+                    if "RUNNING" in consumer_states:
+                        file_states[lfn] = "in_use"
+                    else:
+                        file_states[lfn] = "available"
+                elif ps == "RUNNING":
+                    file_states[lfn] = "staging"  # being created
+                elif ps == "FAILED":
+                    file_states[lfn] = "failed"
+                else:
+                    file_states[lfn] = "pending"
+            else:
+                # Initial input file (no producer compute job)
+                consumer_states = [_node_state(c) for c in consumers.get(lfn, [])]
+                if any(s not in ("UNSUBMITTED",) for s in consumer_states):
+                    file_states[lfn] = "available"  # must have been staged in
+                else:
+                    file_states[lfn] = "pending"
 
         # Create file nodes and edges through them
         adj: Dict[str, List[str]] = {nid: [] for nid in node_map}
@@ -209,13 +254,15 @@ def _render_dag_svg(
             )
 
     # Nodes
-    file_color = {"fill": "#f8fafc", "stroke": "#94a3b8"}
+    default_file_color = {"fill": "#f8fafc", "stroke": "#94a3b8"}
     file_meta = (graph_data.get("metadata") or {}).get("file_meta", {})
     for nid, (cx, cy) in pos.items():
         is_file = nid in file_node_ids
         if is_file:
             nw, nh, rx = FILE_W, FILE_H, 2
-            color = file_color
+            lfn = nid.removeprefix("file:")
+            fstate = file_states.get(lfn, "pending") if show_files else ""
+            color = FILE_COLORS.get(fstate, default_file_color)
             font_size = 10
             state = ""
             js: Any = None
@@ -236,6 +283,8 @@ def _render_dag_svg(
         if is_file:
             lfn = nid.removeprefix("file:")
             tip_lines.append(f"File: {lfn}")
+            if fstate:
+                tip_lines.append(f"Status: {fstate.replace('_', ' ')}")
             fm = file_meta.get(lfn, {})
             if fm.get("type"):
                 tip_lines.append(f"Type: {fm['type']}")
