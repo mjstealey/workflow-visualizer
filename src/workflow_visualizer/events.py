@@ -216,6 +216,17 @@ class EventConsumer:
                     "end_time": fmt_timestamp(js["end_time"]),
                     "duration": fmt_duration(duration),
                 }
+                if js.get("maxrss") is not None:
+                    entry["maxrss"] = js["maxrss"]
+                    entry["maxrss_fmt"] = fmt_memory(js["maxrss"])
+                if js.get("stdout_file"):
+                    entry["stdout_file"] = js["stdout_file"]
+                if js.get("stderr_file"):
+                    entry["stderr_file"] = js["stderr_file"]
+                if js.get("transformation"):
+                    entry["transformation"] = js["transformation"]
+                if js.get("task_argv"):
+                    entry["task_argv"] = js["task_argv"]
                 if js.get("hold_reason"):
                     entry["hold_reason"] = js["hold_reason"]
                     entry["hold_reason_code"] = js.get("hold_reason_code")

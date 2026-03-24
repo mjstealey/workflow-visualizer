@@ -362,12 +362,16 @@ def _render_dag_svg(
 
 
 def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 20) -> str:
-    """Render the event log as an HTML table (most recent first)."""
+    """Render the event log as expandable HTML rows (most recent first).
+
+    Uses native ``<details>``/``<summary>`` elements — no JavaScript needed.
+    The summary row shows job, type, state, timing, and memory.  Expanding
+    reveals full details (transformation, arguments, stdout/stderr paths, etc.).
+    """
     if not event_log:
         return ""
 
     rows = event_log[:max_rows]
-    # State badge colors (inline, no CSS classes needed)
     badge_colors = {
         "SUCCESS": ("#d4edda", "#28a745"),
         "FAILED": ("#f8d7da", "#dc3545"),
@@ -379,41 +383,91 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 20) -> 
         "DONE": ("#d4edda", "#28a745"),
     }
 
-    parts = [
-        '<table style="width:100%;border-collapse:collapse;font-family:system-ui,sans-serif;'
-        'font-size:12px;margin-top:8px">',
-        "<thead><tr>",
-        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">Job</th>',
-        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">Type</th>',
-        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">State</th>',
-        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">Start</th>',
-        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">End</th>',
-        '<th style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;color:#475569">Duration</th>',
-        "</tr></thead><tbody>",
-    ]
-
-    for ev in rows:
-        state = ev.get("state", "")
+    def _badge(state: str) -> str:
         bg, fg = badge_colors.get(state, ("#e0e0e0", "#666"))
-        badge = (
+        return (
             f'<span style="display:inline-block;padding:1px 6px;border-radius:3px;'
             f'background:{bg};color:{fg};font-size:11px;font-weight:600">'
             f'{html.escape(state)}</span>'
         )
+
+    # Table header
+    th = (
+        'style="text-align:left;padding:4px 8px;border-bottom:2px solid #e2e8f0;'
+        'color:#475569;font-size:11px"'
+    )
+    parts = [
+        '<table style="width:100%;border-collapse:collapse;font-family:system-ui,sans-serif;'
+        'font-size:12px;margin-top:8px">',
+        f"<thead><tr>"
+        f"<th {th}>Job</th>"
+        f"<th {th}>Type</th>"
+        f"<th {th}>State</th>"
+        f"<th {th}>Start</th>"
+        f"<th {th}>End</th>"
+        f"<th {th}>Duration</th>"
+        f"<th {th}>Memory</th>"
+        f"</tr></thead><tbody>",
+    ]
+
+    td = 'style="padding:3px 8px;vertical-align:top"'
+    td_mono = 'style="padding:3px 8px;vertical-align:top;font-variant-numeric:tabular-nums"'
+
+    for ev in rows:
+        state = ev.get("state", "")
         job_id = html.escape(ev.get("exec_job_id", ""))
         type_desc = html.escape(ev.get("type_desc", ""))
         start = html.escape(ev.get("start_time", "-"))
         end = html.escape(ev.get("end_time", "-"))
         dur = html.escape(ev.get("duration", "-"))
+        mem = html.escape(ev.get("maxrss_fmt", "-"))
+
+        # Build expandable detail lines
+        detail_lines: List[str] = []
+        if ev.get("raw_state"):
+            detail_lines.append(f"Raw state: {ev['raw_state']}")
+        if ev.get("node_id"):
+            detail_lines.append(f"Node ID: {ev['node_id']}")
+        if ev.get("transformation"):
+            detail_lines.append(f"Transformation: {ev['transformation']}")
+        if ev.get("task_argv"):
+            detail_lines.append(f"Arguments: {ev['task_argv']}")
+        if ev.get("maxrss") is not None:
+            detail_lines.append(f"Peak RSS: {ev.get('maxrss_fmt', ev['maxrss'])} ({ev['maxrss']} KB)")
+        if ev.get("stdout_file"):
+            detail_lines.append(f"Stdout: {ev['stdout_file']}")
+        if ev.get("stderr_file"):
+            detail_lines.append(f"Stderr: {ev['stderr_file']}")
+        if ev.get("hold_reason"):
+            detail_lines.append(f"Hold reason: {ev['hold_reason']}")
+        if ev.get("timestamp"):
+            from datetime import datetime
+            ts_str = datetime.fromtimestamp(ev["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+            detail_lines.append(f"Timestamp: {ts_str}")
+
+        if detail_lines:
+            # Expandable row using <details>/<summary>
+            detail_html = "<br>".join(html.escape(l) for l in detail_lines)
+            job_cell = (
+                f'<details style="cursor:pointer">'
+                f'<summary style="list-style:none;white-space:nowrap">'
+                f'\u25b6 {job_id}</summary>'
+                f'<div style="padding:4px 0 2px 16px;font-size:11px;color:#475569;'
+                f'line-height:1.6">{detail_html}</div>'
+                f'</details>'
+            )
+        else:
+            job_cell = job_id
 
         parts.append(
             f'<tr style="border-bottom:1px solid #f1f5f9">'
-            f'<td style="padding:3px 8px;white-space:nowrap">{job_id}</td>'
-            f'<td style="padding:3px 8px;color:#64748b">{type_desc}</td>'
-            f'<td style="padding:3px 8px">{badge}</td>'
-            f'<td style="padding:3px 8px;font-variant-numeric:tabular-nums">{start}</td>'
-            f'<td style="padding:3px 8px;font-variant-numeric:tabular-nums">{end}</td>'
-            f'<td style="padding:3px 8px;font-variant-numeric:tabular-nums">{dur}</td>'
+            f'<td {td}>{job_cell}</td>'
+            f'<td {td}><span style="color:#64748b">{type_desc}</span></td>'
+            f'<td {td}>{_badge(state)}</td>'
+            f'<td {td_mono}>{start}</td>'
+            f'<td {td_mono}>{end}</td>'
+            f'<td {td_mono}>{dur}</td>'
+            f'<td {td_mono}>{mem}</td>'
             f"</tr>"
         )
 
