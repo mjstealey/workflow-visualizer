@@ -240,7 +240,7 @@ def _render_dag_svg(
         )
 
     # Legend
-    legend_states = ["UNSUBMITTED", "QUEUED", "RUNNING", "SUCCESS", "FAILED", "HELD"]
+    legend_states = ["UNSUBMITTED", "QUEUED", "PRE", "RUNNING", "POST", "SUCCESS", "FAILED", "HELD"]
     lx = MARGIN
     ly = svg_h + 4
     for st in legend_states:
