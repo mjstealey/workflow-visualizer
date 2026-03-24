@@ -47,13 +47,18 @@ def _render_dag_svg(
     state_colors: Dict[str, Dict[str, str]],
     show_files: bool,
 ) -> str:
-    """Lay out a DAG and return a self-contained SVG string (no JS)."""
+    """Lay out a DAG and return a self-contained SVG string (no JS).
+
+    Uses ``viewBox`` so the SVG auto-scales to fit the notebook output area.
+    Wide layers are wrapped into sub-rows to avoid horizontal overflow.
+    """
     nodes_raw: List[Dict[str, Any]] = graph_data.get("nodes", [])
     edges_raw: List[Dict[str, Any]] = graph_data.get("edges", [])
 
     if not nodes_raw:
         return (
-            '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="60">'
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100%" '
+            'viewBox="0 0 400 60" style="max-width:400px">'
             '<text x="200" y="30" text-anchor="middle" font-family="system-ui,sans-serif" '
             'font-size="14" fill="#64748b">No workflow data loaded</text></svg>'
         )
@@ -78,6 +83,7 @@ def _render_dag_svg(
     NODE_W, NODE_H = 150, 40
     H_GAP, V_GAP = 40, 60
     MARGIN = 30
+    MAX_COLS = 5  # wrap layers wider than this into sub-rows
 
     # Assign layers
     layers = _topo_layers(list(node_map.keys()), adj, in_deg)
@@ -88,15 +94,25 @@ def _render_dag_svg(
     if orphans:
         layers.append(orphans)
 
+    # Wrap wide layers into sub-rows (e.g. 10 nodes → 2 rows of 5)
+    wrapped_layers: List[List[str]] = []
+    layer_group: Dict[int, List[int]] = {}  # original layer idx → list of wrapped idxs
+    for orig_idx, layer in enumerate(layers):
+        group_idxs = []
+        for i in range(0, len(layer), MAX_COLS):
+            group_idxs.append(len(wrapped_layers))
+            wrapped_layers.append(layer[i : i + MAX_COLS])
+        layer_group[orig_idx] = group_idxs
+
     # Compute positions (center of each node)
     pos: Dict[str, tuple] = {}
     max_layer_w = 0
-    for layer in layers:
+    for layer in wrapped_layers:
         lw = len(layer) * NODE_W + (len(layer) - 1) * H_GAP
         if lw > max_layer_w:
             max_layer_w = lw
 
-    for li, layer in enumerate(layers):
+    for li, layer in enumerate(wrapped_layers):
         lw = len(layer) * NODE_W + (len(layer) - 1) * H_GAP
         x_offset = MARGIN + (max_layer_w - lw) / 2
         cy = MARGIN + li * (NODE_H + V_GAP) + NODE_H / 2
@@ -104,8 +120,8 @@ def _render_dag_svg(
             cx = x_offset + ni * (NODE_W + H_GAP) + NODE_W / 2
             pos[nid] = (cx, cy)
 
-    svg_w = max_layer_w + 2 * MARGIN
-    svg_h = len(layers) * (NODE_H + V_GAP) - V_GAP + 2 * MARGIN
+    svg_w = max(max_layer_w + 2 * MARGIN, 400)
+    svg_h = len(wrapped_layers) * (NODE_H + V_GAP) - V_GAP + 2 * MARGIN
     # Reserve space for legend
     legend_h = 28
     total_h = svg_h + legend_h
@@ -113,12 +129,13 @@ def _render_dag_svg(
     default_color = {"fill": "#e0f2fe", "stroke": "#0284c7"}
     unknown_color = {"fill": "#e0e0e0", "stroke": "#999999"}
 
+    # Use viewBox so SVG auto-scales to fit the container width
     parts: List[str] = []
     parts.append(
         f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'width="{max(svg_w, 400)}" height="{total_h}" '
-        f'style="font-family:system-ui,-apple-system,sans-serif;background:#fff;'
-        f'border:1px solid #e2e8f0;border-radius:8px">'
+        f'width="100%" viewBox="0 0 {svg_w} {total_h}" '
+        f'style="max-width:{svg_w}px;font-family:system-ui,-apple-system,sans-serif;'
+        f'background:#fff;border:1px solid #e2e8f0;border-radius:8px">'
     )
 
     # Arrowhead marker
@@ -138,13 +155,11 @@ def _render_dag_svg(
             y1 = sy + NODE_H / 2
             y2 = ty - NODE_H / 2
             if abs(y2 - y1) < 1:
-                # Same layer — draw a slight curve
                 parts.append(
                     f'<line x1="{sx}" y1="{y1}" x2="{tx}" y2="{y2}" '
                     f'stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ah)"/>'
                 )
             else:
-                # Vertical with slight S-curve via cubic bezier
                 my = (y1 + y2) / 2
                 parts.append(
                     f'<path d="M{sx},{y1} C{sx},{my} {tx},{my} {tx},{y2}" '
@@ -159,7 +174,6 @@ def _render_dag_svg(
         x = cx - NODE_W / 2
         y = cy - NODE_H / 2
         label = html.escape(node_map[nid].get("nodeLabel", nid))
-        # Truncate long labels
         if len(label) > 20:
             label = label[:18] + "\u2026"
         parts.append(
