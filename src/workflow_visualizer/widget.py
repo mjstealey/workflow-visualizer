@@ -247,21 +247,28 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
 
         self.send({"type": "action_result", "action": action, "result": result})
 
-    def _repr_mimebundle_(self, **kwargs: Any) -> Dict[str, Any]:
+    def _repr_mimebundle_(self, **kwargs: Any) -> Any:
         """Choose the best display representation for the current environment.
 
-        Always includes ``text/html`` as a fallback so that environments which
-        reject the widget MIME type as untrusted (e.g. classic Jupyter Notebook
-        on ACCESS Open OnDemand) can still render the inline DAG visualization.
+        Always includes ``text/html`` with ``isolated: True`` metadata so that
+        environments which reject the widget MIME type as untrusted (e.g.
+        classic Jupyter Notebook on ACCESS Open OnDemand) still render the DAG.
+        The ``isolated`` flag tells classic Notebook to render the HTML inside
+        an iframe, bypassing its script-tag sanitizer.
         """
-        bundle: Dict[str, Any] = {"text/html": self._repr_html_()}
+        data: Dict[str, Any] = {"text/html": self._repr_html_()}
+        metadata: Dict[str, Any] = {"text/html": {"isolated": True}}
         try:
             widget_bundle = super()._repr_mimebundle_(**kwargs)
-            if widget_bundle:
-                bundle.update(widget_bundle)
+            if isinstance(widget_bundle, tuple):
+                wb_data, wb_meta = widget_bundle
+                data.update(wb_data)
+                metadata.update(wb_meta)
+            elif isinstance(widget_bundle, dict) and widget_bundle:
+                data.update(widget_bundle)
         except Exception:
             pass
-        return bundle
+        return data, metadata
 
     def _repr_html_(self) -> str:
         """Inline HTML/SVG fallback for environments where anywidget ESM fails.
