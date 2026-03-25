@@ -282,6 +282,62 @@ def _render_dag_svg(
         '<path d="M0,0 L10,5 L0,10 Z" fill="#94a3b8"/></marker></defs>'
     )
 
+    # Edge colors based on source/target state
+    EDGE_DONE = "#334155"      # dark slate — both endpoints complete
+    EDGE_RUNNING = "#17a2b8"   # cyan — source is running
+    EDGE_QUEUED = "#ffc107"    # amber — source is queued
+    EDGE_FAILED = "#dc3545"    # red — source failed
+    EDGE_DEFAULT = "#cbd5e1"   # light gray — not yet active
+
+    _done_states = {"SUCCESS", "DONE"}
+
+    def _edge_color(src: str, tgt: str) -> tuple:
+        """Return (stroke_color, stroke_width, opacity) for an edge."""
+        # Resolve the display state for each endpoint
+        if src in file_node_ids:
+            # File node — use file state
+            if src.startswith("filegroup:"):
+                ss = file_states.get(src, "pending")
+            else:
+                ss = file_states.get(src.removeprefix("file:"), "pending")
+            ss_map = {"available": "SUCCESS", "in_use": "RUNNING",
+                      "staging": "RUNNING", "failed": "FAILED", "pending": "UNSUBMITTED"}
+            s_state = ss_map.get(ss, "UNSUBMITTED")
+        else:
+            s_state = _node_state(src)
+
+        if tgt in file_node_ids:
+            if tgt.startswith("filegroup:"):
+                ts = file_states.get(tgt, "pending")
+            else:
+                ts = file_states.get(tgt.removeprefix("file:"), "pending")
+            ts_map = {"available": "SUCCESS", "in_use": "RUNNING",
+                      "staging": "RUNNING", "failed": "FAILED", "pending": "UNSUBMITTED"}
+            t_state = ts_map.get(ts, "UNSUBMITTED")
+        else:
+            t_state = _node_state(tgt)
+
+        # Both done → dark/complete
+        if s_state in _done_states and t_state in _done_states:
+            return (EDGE_DONE, 2.0, 1.0)
+        # Source failed
+        if s_state == "FAILED":
+            return (EDGE_FAILED, 2.0, 0.9)
+        # Source running
+        if s_state == "RUNNING":
+            return (EDGE_RUNNING, 2.0, 0.9)
+        # Source done, target not yet
+        if s_state in _done_states:
+            return (EDGE_DONE, 1.5, 0.6)
+        # Source queued
+        if s_state in ("QUEUED", "PRE"):
+            return (EDGE_QUEUED, 1.5, 0.7)
+        # Default — not yet active
+        return (EDGE_DEFAULT, 1.5, 0.4)
+
+    # Arrowhead markers — one per color so edges get matching arrowheads
+    _arrow_colors_used: set = set()
+
     # Edges
     for s, t in render_edges:
         sx, sy = pos[s]
@@ -290,17 +346,32 @@ def _render_dag_svg(
         th = FILE_H if t in file_node_ids else NODE_H
         y1 = sy + sh / 2
         y2 = ty - th / 2
+        ecolor, ewidth, eopacity = _edge_color(s, t)
+
+        # Ensure we have an arrowhead marker for this color
+        if ecolor not in _arrow_colors_used:
+            _arrow_colors_used.add(ecolor)
+            safe_id = ecolor.replace("#", "c")
+            parts.append(
+                f'<marker id="ah-{safe_id}" viewBox="0 0 10 10" refX="9" refY="5" '
+                f'markerWidth="8" markerHeight="8" orient="auto">'
+                f'<path d="M0,0 L10,5 L0,10 Z" fill="{ecolor}" opacity="{eopacity}"/>'
+                f'</marker>'
+            )
+        marker_id = f"ah-{ecolor.replace('#', 'c')}"
+
         if abs(y2 - y1) < 1:
             parts.append(
                 f'<line x1="{sx}" y1="{y1}" x2="{tx}" y2="{y2}" '
-                f'stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ah)"/>'
+                f'stroke="{ecolor}" stroke-width="{ewidth}" opacity="{eopacity}" '
+                f'marker-end="url(#{marker_id})"/>'
             )
         else:
             my = (y1 + y2) / 2
             parts.append(
                 f'<path d="M{sx},{y1} C{sx},{my} {tx},{my} {tx},{y2}" '
-                f'fill="none" stroke="#94a3b8" stroke-width="1.5" '
-                f'marker-end="url(#ah)"/>'
+                f'fill="none" stroke="{ecolor}" stroke-width="{ewidth}" '
+                f'opacity="{eopacity}" marker-end="url(#{marker_id})"/>'
             )
 
     # Nodes
