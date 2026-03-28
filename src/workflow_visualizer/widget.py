@@ -13,7 +13,7 @@ import traitlets
 from .controls import WorkflowControls
 from .events import EventConsumer, RemoteEventConsumer
 from .parser import WorkflowGraph
-from .state import STATE_COLORS
+from .state import STATE_COLORS, fmt_memory_mb, fmt_memory, fmt_bytes, fmt_percent
 
 _HERE = Path(__file__).parent
 
@@ -450,6 +450,41 @@ def _render_dag_svg(
                     tip_lines.append(f"Transformation: {js['transformation']}")
                 if js.get("exitcode") is not None and js.get("exitcode") != 0:
                     tip_lines.append(f"Exit code: {js['exitcode']}")
+                # Resource requests
+                res_parts = []
+                if js.get("request_cpus"):
+                    res_parts.append(f"{js['request_cpus']} CPU")
+                if js.get("request_memory"):
+                    res_parts.append(f"{js['request_memory']} MB")
+                if js.get("request_gpus") and js["request_gpus"] > 0:
+                    res_parts.append(f"{js['request_gpus']} GPU")
+                if res_parts:
+                    tip_lines.append(f"Requested: {', '.join(res_parts)}")
+                # HTCondor metrics
+                if js.get("wall_time"):
+                    tip_lines.append(f"Wall time: {js['wall_time']}")
+                if js.get("cpu_time"):
+                    tip_lines.append(f"CPU time: {js['cpu_time']}")
+                if js.get("cpu_efficiency_fmt"):
+                    tip_lines.append(f"CPU efficiency: {js['cpu_efficiency_fmt']}")
+                if js.get("memory_efficiency_fmt"):
+                    tip_lines.append(f"Memory efficiency: {js['memory_efficiency_fmt']}")
+                if js.get("image_size_fmt"):
+                    tip_lines.append(f"Peak memory: {js['image_size_fmt']}")
+                if js.get("disk_usage_fmt"):
+                    tip_lines.append(f"Disk usage: {js['disk_usage_fmt']}")
+                if js.get("bytes_recvd_fmt"):
+                    tip_lines.append(f"Bytes in: {js['bytes_recvd_fmt']}")
+                if js.get("bytes_sent_fmt"):
+                    tip_lines.append(f"Bytes out: {js['bytes_sent_fmt']}")
+                if js.get("queue_wait") and js["queue_wait"] != "-":
+                    tip_lines.append(f"Queue wait: {js['queue_wait']}")
+                if js.get("remote_host"):
+                    tip_lines.append(f"Host: {js['remote_host']}")
+                if js.get("num_job_starts") is not None and js["num_job_starts"] > 1:
+                    tip_lines.append(f"Restarts: {js['num_job_starts']}")
+                if js.get("site"):
+                    tip_lines.append(f"Site: {js['site']}")
                 if js.get("hold_reason"):
                     tip_lines.append(f"Hold reason: {js['hold_reason']}")
             # Info from workflow.yml node data
@@ -635,7 +670,11 @@ def _render_header(
     return "\n".join(parts)
 
 
-def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> str:
+def _render_event_table(
+    event_log: List[Dict[str, Any]],
+    max_rows: int = 30,
+    job_states_dict: Optional[Dict[str, Any]] = None,
+) -> str:
     """Render the event log grouped by job, with expandable state history.
 
     Each unique job appears once as a primary row showing its current (latest)
@@ -644,6 +683,9 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
     """
     if not event_log:
         return ""
+
+    if job_states_dict is None:
+        job_states_dict = {}
 
     from collections import OrderedDict
     from datetime import datetime
@@ -733,6 +775,43 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
         if latest.get("hold_reason"):
             meta_items.append(("Hold reason", latest["hold_reason"]))
 
+        # Look up enriched data from job_states for this job
+        job_data = job_states_dict.get(
+            latest.get("node_id") or job_id_raw, {}
+        )
+        if isinstance(job_data, dict):
+            if job_data.get("wall_time"):
+                meta_items.append(("Wall time", job_data["wall_time"]))
+            if job_data.get("cpu_time"):
+                meta_items.append(("CPU time", job_data["cpu_time"]))
+            if job_data.get("cpu_efficiency_fmt"):
+                meta_items.append(("CPU efficiency", job_data["cpu_efficiency_fmt"]))
+            if job_data.get("memory_efficiency_fmt"):
+                meta_items.append(("Memory efficiency", job_data["memory_efficiency_fmt"]))
+            if job_data.get("image_size_fmt"):
+                meta_items.append(("Peak memory", job_data["image_size_fmt"]))
+            if job_data.get("disk_usage_fmt"):
+                meta_items.append(("Disk usage", job_data["disk_usage_fmt"]))
+            if job_data.get("bytes_recvd_fmt"):
+                meta_items.append(("Bytes in", job_data["bytes_recvd_fmt"]))
+            if job_data.get("bytes_sent_fmt"):
+                meta_items.append(("Bytes out", job_data["bytes_sent_fmt"]))
+            if job_data.get("queue_wait") and job_data["queue_wait"] != "-":
+                meta_items.append(("Queue wait", job_data["queue_wait"]))
+            if job_data.get("remote_host"):
+                meta_items.append(("Remote host", job_data["remote_host"]))
+            res_parts = []
+            if job_data.get("request_cpus"):
+                res_parts.append(f"{job_data['request_cpus']} CPU")
+            if job_data.get("request_memory"):
+                res_parts.append(f"{job_data['request_memory']} MB")
+            if job_data.get("request_gpus") and job_data["request_gpus"] > 0:
+                res_parts.append(f"{job_data['request_gpus']} GPU")
+            if res_parts:
+                meta_items.append(("Requested", ", ".join(res_parts)))
+            if job_data.get("num_job_starts") is not None and job_data["num_job_starts"] > 1:
+                meta_items.append(("Restarts", str(job_data["num_job_starts"])))
+
         if meta_items:
             detail_parts.append(
                 '<div style="display:grid;grid-template-columns:100px 1fr;gap:2px 12px;'
@@ -796,6 +875,92 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
     return "\n".join(parts)
 
 
+def _render_pool_status(pool: Dict[str, Any]) -> str:
+    """Render pool resources panel as HTML."""
+    if not pool:
+        return ""
+
+    stat_lbl = 'style="color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:0.5px"'
+    stat_val = 'style="font-weight:600;color:#1e293b;font-size:13px"'
+
+    parts = [
+        '<div style="font-family:system-ui,sans-serif;padding:10px 12px;'
+        'border:1px solid #e2e8f0;border-radius:8px;margin-top:8px;background:#fff">',
+        '<div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:8px">'
+        'Pool Resources</div>',
+        '<div style="display:flex;gap:24px;flex-wrap:wrap">',
+    ]
+
+    # Machines
+    if pool.get("machines") is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Machines</div>'
+            f'<div {stat_val}>{pool["machines"]}</div></div>'
+        )
+
+    # Slots
+    total_slots = pool.get("total_slots", 0)
+    claimed = pool.get("claimed_slots", 0)
+    idle = pool.get("idle_slots", 0)
+    if total_slots:
+        parts.append(
+            f'<div><div {stat_lbl}>Slots</div>'
+            f'<div {stat_val}>{claimed}/{total_slots} '
+            f'<span style="color:#64748b;font-weight:400;font-size:11px">claimed</span>'
+            f'</div></div>'
+        )
+
+    # CPUs
+    total_cpus = pool.get("total_cpus", 0)
+    idle_cpus = pool.get("idle_cpus", 0)
+    if total_cpus:
+        parts.append(
+            f'<div><div {stat_lbl}>CPUs</div>'
+            f'<div {stat_val}>{idle_cpus}/{total_cpus} '
+            f'<span style="color:#64748b;font-weight:400;font-size:11px">idle</span>'
+            f'</div></div>'
+        )
+
+    # Memory
+    total_mem = pool.get("total_memory_mb")
+    idle_mem = pool.get("idle_memory_mb")
+    if total_mem is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Memory</div>'
+            f'<div {stat_val}>{fmt_memory_mb(idle_mem)} / {fmt_memory_mb(total_mem)} '
+            f'<span style="color:#64748b;font-weight:400;font-size:11px">idle</span>'
+            f'</div></div>'
+        )
+
+    # GPUs
+    total_gpus = pool.get("total_gpus", 0)
+    idle_gpus = pool.get("idle_gpus", 0)
+    if total_gpus and total_gpus > 0:
+        parts.append(
+            f'<div><div {stat_lbl}>GPUs</div>'
+            f'<div {stat_val}>{idle_gpus}/{total_gpus} '
+            f'<span style="color:#64748b;font-weight:400;font-size:11px">idle</span>'
+            f'</div></div>'
+        )
+
+    # Load average
+    if pool.get("load_avg") is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Load Avg</div>'
+            f'<div {stat_val}>{pool["load_avg"]:.1f}</div></div>'
+        )
+
+    # OS/Arch
+    if pool.get("os_arch"):
+        parts.append(
+            f'<div><div {stat_lbl}>Platform</div>'
+            f'<div style="font-size:11px;color:#475569">{html.escape(pool["os_arch"])}</div></div>'
+        )
+
+    parts.append('</div></div>')
+    return "\n".join(parts)
+
+
 class WorkflowVisualizerWidget(anywidget.AnyWidget):
     """Interactive DAG visualization of a Pegasus workflow.
 
@@ -830,6 +995,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
     state_colors = traitlets.Dict(STATE_COLORS).tag(sync=True)
     show_files = traitlets.Bool(False).tag(sync=True)
     workflow_info = traitlets.Dict({}).tag(sync=True)
+    pool_status = traitlets.Dict({}).tag(sync=True)
     status_message = traitlets.Unicode("").tag(sync=True)
     source_mode = traitlets.Unicode("STATIC").tag(sync=True)
     source_detail = traitlets.Unicode("").tag(sync=True)
@@ -967,6 +1133,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         self.job_states = self._consumer.job_states
         self.event_log = self._consumer.event_log[:100]  # cap at 100 entries
         self.workflow_state = self._consumer.workflow_state
+        self.pool_status = self._consumer.pool_status
 
         # Merge consumer workflow_info into existing info (preserves parser-seeded fields)
         consumer_info = self._consumer.workflow_info
@@ -1054,8 +1221,9 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         self._poll_once()
         header = self._render_header_html()
         svg = self._repr_html_()
-        event_table = _render_event_table(list(self.event_log))
-        return {"text/html": f"{header}{svg}{event_table}"}
+        pool_html = _render_pool_status(dict(self.pool_status))
+        event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
+        return {"text/html": f"{header}{svg}{pool_html}{event_table}"}
 
     def _render_header_html(self) -> str:
         """Render the workflow info header bar."""
@@ -1114,13 +1282,14 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
                 clear_output(wait=True)
                 header = self._render_header_html()
                 svg = self._repr_html_()
-                event_table = _render_event_table(list(self.event_log))
+                pool_html = _render_pool_status(dict(self.pool_status))
+                event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
                 refresh_note = (
                     f'<div style="font-family:system-ui,sans-serif;font-size:11px;'
                     f'color:#94a3b8;text-align:right;padding:2px 4px">'
                     f'Refreshing every {refresh}s &mdash; Ctrl-C to stop</div>'
                 )
-                display(HTML(f"{header}{svg}{event_table}{refresh_note}"))
+                display(HTML(f"{header}{svg}{pool_html}{event_table}{refresh_note}"))
 
                 # Stop if workflow reached a terminal state
                 if self.workflow_state in ("SUCCESS", "FAILED", "UNKNOWN") and self._consumer and not self._polling:
@@ -1154,8 +1323,9 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             self.show_files = show_files
         header = self._render_header_html()
         svg = self._repr_html_()
-        event_table = _render_event_table(list(self.event_log))
-        display(HTML(f"{header}{svg}{event_table}"))
+        pool_html = _render_pool_status(dict(self.pool_status))
+        event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
+        display(HTML(f"{header}{svg}{pool_html}{event_table}"))
 
     def summary(self) -> None:
         """Print a text summary of the workflow graph."""

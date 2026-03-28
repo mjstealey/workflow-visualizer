@@ -23,8 +23,12 @@ The mode is set automatically based on the parameters provided at initialization
 - **File data flow** — toggle data file nodes to see inputs/outputs between compute jobs, with automatic grouping for complex workflows
 - **File state inference** — data file nodes are colored by their inferred state (pending, staging, available, in use, failed)
 - **Workflow header** — displays workflow name, state, job progress (N/M done), elapsed time, and Pegasus version
-- **Event log display** — grouped by job with expandable state history, memory usage, and job metadata
-- **Hover tooltips** showing full metadata for job nodes, file nodes, and grouped file aggregates
+- **Pool resources panel** — live HTCondor pool status: machines, slots (claimed/idle), CPUs, memory, GPUs, load average, and platform
+- **HTCondor job metrics** — resource requests (CPUs, memory, disk, GPUs), queue wait time, restart count, transfer I/O, and accounting group per job
+- **Post-completion metrics** — CPU time (user/sys), wall clock time, peak memory, disk usage, transfer bytes, and remote host from `condor_history`
+- **Derived efficiency metrics** — CPU efficiency (CPU time / wall time) and memory efficiency (peak usage / requested) per job
+- **Event log display** — grouped by job with expandable state history, resource metrics, efficiency indicators, and job metadata
+- **Hover tooltips** showing full metadata for job nodes including resource requests, efficiency metrics, transfer I/O, queue wait, and remote host
 - **Helper methods** — `show()`, `watch()`, and `summary()` for flexible rendering in SVG fallback mode
 - **Workflow lifecycle controls** — plan, start, stop, resume via Pegasus CLI
 - **Workflow-monitor integration** — start/stop the monitor serve function
@@ -316,6 +320,50 @@ When `show_files=True`, data file nodes appear between compute jobs showing the 
 - File nodes are color-coded by inferred state: pending (gray), staging (blue), available (green), in use (cyan), failed (red)
 - The grouping threshold is 3 files — routes with 3 or fewer files show individual nodes
 
+### Pool Resources Panel
+
+When the workflow-monitor emits `pool_status` events (Tier 4), a Pool Resources panel appears showing live HTCondor pool information:
+
+| Metric | Description |
+|---|---|
+| Machines | Number of unique machines in the pool |
+| Slots | Claimed / total slots |
+| CPUs | Idle / total CPU cores |
+| Memory | Idle / total memory |
+| GPUs | Idle / total GPUs (shown only if GPUs are available) |
+| Load Avg | System load average across the pool |
+| Platform | Operating system and architecture |
+
+The panel is shown in both anywidget mode (as a bar below the DAG viewport) and SVG fallback mode.
+
+### HTCondor Job Metrics
+
+When the workflow-monitor emits `htcondor_poll` (Tier 1-2), `htcondor_history` (Tier 3), or `pool_status` (Tier 4) events, additional per-job metrics are available in tooltips and the event log:
+
+**Resource Requests (Tier 1):**
+- CPU cores, memory, disk, GPUs requested
+- Job restart count (preemption/eviction)
+- Accounting group
+
+**Transfer I/O (Tier 2):**
+- Bytes sent/received during file transfer
+- Declared input size
+- Queue wait time (time from submission to execution start)
+
+**Post-Completion Metrics (Tier 3):**
+- Wall clock time, user CPU time, system CPU time
+- Peak memory usage (ImageSize), disk usage
+- Remote host that executed the job
+- Transfer bytes (final totals)
+
+**Derived Efficiency Metrics:**
+- **CPU efficiency** — `(user CPU + sys CPU) / (wall time × requested CPUs)` — indicates how well the job utilized allocated CPU
+- **Memory efficiency** — `peak memory / requested memory` — indicates how well the job utilized allocated memory
+
+These metrics appear in:
+- **Node tooltips** (hover over a job node in the DAG)
+- **Event log detail rows** (click to expand a job in the event log)
+
 ### Polling and Cleanup
 
 Polling starts automatically when a JSONL source is provided and stops when a `workflow_end` event is received. To manually control polling:
@@ -338,19 +386,30 @@ workflow.yml ──→ parser.py ──→ WorkflowGraph (nodes + edges)
   (local or          │
    via SSH)          ▼
 workflow-events.jsonl ──→ events.py ──→ EventConsumer ──→ job states + event log
-  (local or                                                      │
-   via SSH)                                                      ▼
+  (local or                  │                           + pool status
+   via SSH)                  │                                 │
          └──→ RemoteEventConsumer                    widget.py (anywidget)
                  (fetch_file +                            │
-                  incremental sync)       ┌───────────────┼─────────────┐
-                                          ▼               ▼             ▼
-                                    DAG render      Event table    Controls
-                                   (state.py)                   (controls.py)
+                  incremental sync)       ┌───────────┬───┼─────────┬────────┐
+                                          ▼           ▼   ▼         ▼        ▼
+                                    DAG render   Pool panel  Event   Controls
+                                   (state.py)    (Tier 4)   table  (controls.py)
+
+Event types consumed:
+  workflow_start   → workflow metadata
+  jobs_init        → job roster
+  workflow_state   → workflow lifecycle
+  job_state        → per-job state transitions
+  htcondor_poll    → live ClassAd metrics (Tier 1-2)
+  htcondor_history → post-completion metrics (Tier 3)
+  pool_status      → pool resources (Tier 4)
+  workflow_end     → final summary
 
 SVG Fallback Path (classic Notebook / ACCESS):
-  widget.py → _render_dag_svg()  → pure SVG (Python-side layout)
-            → _render_header()   → workflow info bar (HTML)
-            → _render_event_table() → grouped event log (HTML <details>)
+  widget.py → _render_dag_svg()      → pure SVG (Python-side layout)
+            → _render_header()       → workflow info bar (HTML)
+            → _render_pool_status()  → pool resources panel (HTML)
+            → _render_event_table()  → grouped event log (HTML <details>)
 ```
 
 ### Modules
@@ -358,8 +417,8 @@ SVG Fallback Path (classic Notebook / ACCESS):
 | Module | Purpose |
 |---|---|
 | `parser.py` | Parses `workflow.yml` into a graph of nodes and edges |
-| `state.py` | Maps Pegasus job states to display categories and UML colors |
-| `events.py` | Consumes JSONL event logs (local or SSH) with incremental polling |
+| `state.py` | Maps Pegasus job states to display categories, UML colors, and formatting helpers |
+| `events.py` | Consumes JSONL event logs (local or SSH) with incremental polling; handles `htcondor_poll`, `htcondor_history`, `pool_status` events |
 | `controls.py` | Subprocess wrappers for Pegasus and workflow-monitor CLI commands |
 | `widget.py` | AnyWidget integration with pure SVG fallback for classic Notebook |
 

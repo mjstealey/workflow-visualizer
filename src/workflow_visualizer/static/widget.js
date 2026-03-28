@@ -239,9 +239,28 @@ function showTooltip(tooltip, event, node, jobState) {
     if (jobState.duration) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Duration</span><span class="wfviz-tooltip-val">${jobState.duration}</span></div>`;
     if (jobState.maxrss_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Peak RSS</span><span class="wfviz-tooltip-val">${jobState.maxrss_fmt}</span></div>`;
     if (jobState.site) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Site</span><span class="wfviz-tooltip-val">${jobState.site}</span></div>`;
+    // Resource requests
+    const resParts = [];
+    if (jobState.request_cpus) resParts.push(`${jobState.request_cpus} CPU`);
+    if (jobState.request_memory) resParts.push(`${jobState.request_memory} MB`);
+    if (jobState.request_gpus && jobState.request_gpus > 0) resParts.push(`${jobState.request_gpus} GPU`);
+    if (resParts.length) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Requested</span><span class="wfviz-tooltip-val">${resParts.join(", ")}</span></div>`;
+    // Timing and CPU
+    if (jobState.wall_time) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Wall Time</span><span class="wfviz-tooltip-val">${jobState.wall_time}</span></div>`;
     if (jobState.cpu_time) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">CPU Time</span><span class="wfviz-tooltip-val">${jobState.cpu_time}</span></div>`;
-    if (jobState.request_cpus) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">CPUs</span><span class="wfviz-tooltip-val">${jobState.request_cpus}</span></div>`;
-    if (jobState.request_memory) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Req. Mem</span><span class="wfviz-tooltip-val">${jobState.request_memory} MB</span></div>`;
+    if (jobState.cpu_efficiency_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">CPU Eff.</span><span class="wfviz-tooltip-val">${jobState.cpu_efficiency_fmt}</span></div>`;
+    if (jobState.memory_efficiency_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Mem Eff.</span><span class="wfviz-tooltip-val">${jobState.memory_efficiency_fmt}</span></div>`;
+    // Memory and disk
+    if (jobState.image_size_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Peak Mem</span><span class="wfviz-tooltip-val">${jobState.image_size_fmt}</span></div>`;
+    if (jobState.disk_usage_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Disk</span><span class="wfviz-tooltip-val">${jobState.disk_usage_fmt}</span></div>`;
+    // Transfer I/O
+    if (jobState.bytes_recvd_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Bytes In</span><span class="wfviz-tooltip-val">${jobState.bytes_recvd_fmt}</span></div>`;
+    if (jobState.bytes_sent_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Bytes Out</span><span class="wfviz-tooltip-val">${jobState.bytes_sent_fmt}</span></div>`;
+    // Queue and host
+    if (jobState.queue_wait && jobState.queue_wait !== "-") html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Q. Wait</span><span class="wfviz-tooltip-val">${jobState.queue_wait}</span></div>`;
+    if (jobState.remote_host) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Host</span><span class="wfviz-tooltip-val wfviz-tooltip-mono">${jobState.remote_host}</span></div>`;
+    if (jobState.num_job_starts != null && jobState.num_job_starts > 1) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Restarts</span><span class="wfviz-tooltip-val">${jobState.num_job_starts}</span></div>`;
+    if (jobState.maxrss_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Peak RSS</span><span class="wfviz-tooltip-val">${jobState.maxrss_fmt}</span></div>`;
     if (jobState.stdout_file) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Stdout</span><span class="wfviz-tooltip-val wfviz-tooltip-mono">${jobState.stdout_file}</span></div>`;
     if (jobState.stderr_file) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Stderr</span><span class="wfviz-tooltip-val wfviz-tooltip-mono">${jobState.stderr_file}</span></div>`;
     if (jobState.hold_reason) html += `<div class="wfviz-tooltip-row wfviz-tooltip-diag"><span class="wfviz-tooltip-key">Hold</span><span class="wfviz-tooltip-val">${jobState.hold_reason}</span></div>`;
@@ -681,6 +700,63 @@ function renderInfoBar(infoBar, model) {
   }
 }
 
+// ── Pool Resources Panel ───────────────────────────────────────────────────
+
+function fmtMemMB(mb) {
+  if (mb == null || mb < 0) return "-";
+  if (mb < 1024) return mb + " MB";
+  return (mb / 1024).toFixed(1) + " GB";
+}
+
+function renderPoolStatus(panel, model) {
+  const pool = model.get("pool_status") || {};
+  const hasData = pool.total_slots || pool.total_cpus || pool.machines;
+  panel.style("display", hasData ? "flex" : "none");
+  if (!hasData) return;
+
+  panel.html("");
+
+  panel.append("span").attr("class", "wfviz-pool-title").text("Pool Resources");
+
+  if (pool.machines != null) {
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Machines</span><span class="wfviz-pool-value">${pool.machines}</span>`);
+  }
+
+  if (pool.total_slots) {
+    const claimed = pool.claimed_slots || 0;
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Slots</span><span class="wfviz-pool-value">${claimed}/${pool.total_slots} <small>claimed</small></span>`);
+  }
+
+  if (pool.total_cpus) {
+    const idle = pool.idle_cpus || 0;
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">CPUs</span><span class="wfviz-pool-value">${idle}/${pool.total_cpus} <small>idle</small></span>`);
+  }
+
+  if (pool.total_memory_mb != null) {
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Memory</span><span class="wfviz-pool-value">${fmtMemMB(pool.idle_memory_mb)} / ${fmtMemMB(pool.total_memory_mb)} <small>idle</small></span>`);
+  }
+
+  if (pool.total_gpus && pool.total_gpus > 0) {
+    const idleGpus = pool.idle_gpus || 0;
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">GPUs</span><span class="wfviz-pool-value">${idleGpus}/${pool.total_gpus} <small>idle</small></span>`);
+  }
+
+  if (pool.load_avg != null) {
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Load</span><span class="wfviz-pool-value">${pool.load_avg.toFixed(1)}</span>`);
+  }
+
+  if (pool.os_arch) {
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Platform</span><span class="wfviz-pool-value">${pool.os_arch}</span>`);
+  }
+}
+
 // ── Placeholder (no workflow loaded) ────────────────────────────────────────
 
 function showPlaceholder(viewport, model) {
@@ -724,6 +800,10 @@ function render({ model, el }) {
   // Tooltip
   const tooltip = container.append("div").attr("class", "wfviz-tooltip");
 
+  // Pool resources panel
+  const poolPanel = container.append("div").attr("class", "wfviz-pool-panel");
+  renderPoolStatus(poolPanel, model);
+
   // Event log panel
   const eventPanel = container.append("div").attr("class", "wfviz-event-panel");
 
@@ -741,9 +821,10 @@ function render({ model, el }) {
     const colors = model.get("state_colors") || DEFAULT_COLORS;
     const showFiles = model.get("show_files");
 
-    // Update toolbar and info bar
+    // Update toolbar, info bar, and pool panel
     buildToolbar(toolbar, model);
     renderInfoBar(infoBar, model);
+    renderPoolStatus(poolPanel, model);
 
     // If no graph data, show placeholder
     if (!graphData || !graphData.nodes || graphData.nodes.length === 0) {
@@ -829,6 +910,7 @@ function render({ model, el }) {
   model.on("change:status_message", update);
   model.on("change:source_mode", update);
   model.on("change:source_detail", update);
+  model.on("change:pool_status", update);
 }
 
 export default { render };

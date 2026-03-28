@@ -708,6 +708,56 @@ marker#wfviz-arrowhead path {
     width: 350px;
 }
 
+/* ── Pool Resources Panel ───────────────────────────────────────────── */
+
+.wfviz-pool-panel {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 6px 12px;
+    background: #f0f4f8;
+    border-top: 1px solid #e2e8f0;
+    font-size: 11px;
+    flex-wrap: wrap;
+    min-height: 0;
+}
+
+.wfviz-pool-title {
+    font-weight: 700;
+    font-size: 11px;
+    color: #1e293b;
+    letter-spacing: 0.02em;
+    padding-right: 8px;
+    border-right: 1px solid #dce1e8;
+}
+
+.wfviz-pool-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.wfviz-pool-label {
+    color: #94a3b8;
+    font-weight: 500;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.wfviz-pool-value {
+    color: #334155;
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.wfviz-pool-value small {
+    color: #64748b;
+    font-weight: 400;
+    font-size: 10px;
+}
+
 /* ── Toggle ─────────────────────────────────────────────────────────── */
 
 .wfviz-toggle {
