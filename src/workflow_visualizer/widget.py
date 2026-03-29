@@ -13,7 +13,7 @@ import traitlets
 from .controls import WorkflowControls
 from .events import EventConsumer, RemoteEventConsumer
 from .parser import WorkflowGraph
-from .state import STATE_COLORS, fmt_memory_mb, fmt_memory, fmt_bytes, fmt_percent
+from .state import STATE_COLORS, fmt_memory_mb, fmt_memory, fmt_bytes, fmt_percent, fmt_duration
 
 _HERE = Path(__file__).parent
 
@@ -961,6 +961,234 @@ def _render_pool_status(pool: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _render_workflow_stats(stats: Dict[str, Any]) -> str:
+    """Render workflow synopsis panel as HTML."""
+    if not stats:
+        return ""
+
+    sect_lbl = (
+        'style="font-size:11px;font-weight:700;color:#475569;'
+        'text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;'
+        'border-bottom:1px solid #e2e8f0;padding-bottom:4px"'
+    )
+    stat_lbl = (
+        'style="color:#94a3b8;font-size:10px;text-transform:uppercase;'
+        'letter-spacing:0.5px"'
+    )
+    stat_val = 'style="font-weight:600;color:#1e293b;font-size:13px"'
+
+    parts = [
+        '<div style="font-family:system-ui,sans-serif;padding:12px;'
+        'border:1px solid #e2e8f0;border-radius:8px;margin-top:8px;background:#fff">',
+        '<div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:10px">'
+        'Workflow Synopsis</div>',
+    ]
+
+    # ── Job Summary row ──
+    parts.append(f'<div {sect_lbl}>Jobs</div>')
+    parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+
+    total = stats.get("total_jobs")
+    compute = stats.get("compute_jobs")
+    infra = stats.get("infra_jobs")
+    succeeded = stats.get("succeeded")
+    failed = stats.get("failed")
+    held = stats.get("held")
+
+    if total is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Total</div>'
+            f'<div {stat_val}>{total}</div></div>'
+        )
+    if compute is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Compute</div>'
+            f'<div {stat_val}>{compute}</div></div>'
+        )
+    if infra is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Infra</div>'
+            f'<div {stat_val}>{infra}</div></div>'
+        )
+    if succeeded is not None:
+        color = "#16a34a" if succeeded == total else "#1e293b"
+        parts.append(
+            f'<div><div {stat_lbl}>Succeeded</div>'
+            f'<div style="font-weight:600;color:{color};font-size:13px">{succeeded}</div></div>'
+        )
+    if failed is not None:
+        color = "#dc2626" if failed > 0 else "#1e293b"
+        parts.append(
+            f'<div><div {stat_lbl}>Failed</div>'
+            f'<div style="font-weight:600;color:{color};font-size:13px">{failed}</div></div>'
+        )
+    if held is not None and held > 0:
+        parts.append(
+            f'<div><div {stat_lbl}>Held</div>'
+            f'<div style="font-weight:600;color:#9333ea;font-size:13px">{held}</div></div>'
+        )
+    parts.append('</div>')
+
+    # ── Timing row ──
+    wall_time = stats.get("wall_time")
+    total_compute = stats.get("total_compute_time")
+    parallelism = stats.get("parallelism")
+    if wall_time is not None or total_compute is not None:
+        parts.append(f'<div {sect_lbl}>Timing</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+        if wall_time is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Wall Time</div>'
+                f'<div {stat_val}>{fmt_duration(wall_time)}</div></div>'
+            )
+        if total_compute is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Total Compute</div>'
+                f'<div {stat_val}>{fmt_duration(total_compute)}</div></div>'
+            )
+        if parallelism is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Parallelism</div>'
+                f'<div {stat_val}>{parallelism:.2f}x</div></div>'
+            )
+        parts.append('</div>')
+
+    # ── Duration distribution row ──
+    dur_min = stats.get("dur_min")
+    dur_max = stats.get("dur_max")
+    dur_mean = stats.get("dur_mean")
+    dur_median = stats.get("dur_median")
+    longest = stats.get("longest_job_name")
+    shortest = stats.get("shortest_job_name")
+    if dur_min is not None:
+        parts.append(f'<div {sect_lbl}>Job Duration</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+        parts.append(
+            f'<div><div {stat_lbl}>Min</div>'
+            f'<div {stat_val}>{fmt_duration(dur_min)}</div></div>'
+        )
+        if dur_max is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Max</div>'
+                f'<div {stat_val}>{fmt_duration(dur_max)}</div></div>'
+            )
+        if dur_mean is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Mean</div>'
+                f'<div {stat_val}>{fmt_duration(dur_mean)}</div></div>'
+            )
+        if dur_median is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Median</div>'
+                f'<div {stat_val}>{fmt_duration(dur_median)}</div></div>'
+            )
+        if longest:
+            parts.append(
+                f'<div><div {stat_lbl}>Longest</div>'
+                f'<div style="font-size:12px;color:#475569">{html.escape(longest)}</div></div>'
+            )
+        if shortest:
+            parts.append(
+                f'<div><div {stat_lbl}>Shortest</div>'
+                f'<div style="font-size:12px;color:#475569">{html.escape(shortest)}</div></div>'
+            )
+        parts.append('</div>')
+
+    # ── Memory row ──
+    peak_kb = stats.get("peak_maxrss_kb")
+    peak_job = stats.get("peak_maxrss_job")
+    mean_kb = stats.get("mean_maxrss_kb")
+    if peak_kb is not None:
+        parts.append(f'<div {sect_lbl}>Memory</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+        parts.append(
+            f'<div><div {stat_lbl}>Peak RSS</div>'
+            f'<div {stat_val}>{fmt_memory(peak_kb)}</div></div>'
+        )
+        if peak_job:
+            parts.append(
+                f'<div><div {stat_lbl}>Peak Job</div>'
+                f'<div style="font-size:12px;color:#475569">{html.escape(peak_job)}</div></div>'
+            )
+        if mean_kb is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Mean RSS</div>'
+                f'<div {stat_val}>{fmt_memory(int(mean_kb))}</div></div>'
+            )
+        parts.append('</div>')
+
+    # ── Efficiency row ──
+    cpu_mean = stats.get("cpu_eff_mean")
+    mem_mean = stats.get("mem_eff_mean")
+    cpu_min = stats.get("cpu_eff_min")
+    cpu_max = stats.get("cpu_eff_max")
+    if cpu_mean is not None or mem_mean is not None:
+        parts.append(f'<div {sect_lbl}>Efficiency</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+        if cpu_mean is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>CPU Eff (mean)</div>'
+                f'<div {stat_val}>{fmt_percent(cpu_mean)}</div></div>'
+            )
+        if cpu_min is not None and cpu_max is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>CPU Eff (range)</div>'
+                f'<div {stat_val}>{fmt_percent(cpu_min)} – {fmt_percent(cpu_max)}</div></div>'
+            )
+        if mem_mean is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Mem Eff (mean)</div>'
+                f'<div {stat_val}>{fmt_percent(mem_mean)}</div></div>'
+            )
+        parts.append('</div>')
+
+    # ── Resources row ──
+    cpu_seconds = stats.get("cpu_seconds")
+    transfer = stats.get("transfer_bytes")
+    hosts = stats.get("hosts")
+    pool_machines = stats.get("pool_machines")
+    pool_cpus = stats.get("pool_total_cpus")
+    pool_gpus = stats.get("pool_total_gpus")
+    if cpu_seconds is not None or hosts:
+        parts.append(f'<div {sect_lbl}>Resources</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:4px">')
+        if cpu_seconds is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>CPU Seconds</div>'
+                f'<div {stat_val}>{fmt_duration(cpu_seconds)}</div></div>'
+            )
+        if transfer is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Data Transfer</div>'
+                f'<div {stat_val}>{fmt_bytes(transfer)}</div></div>'
+            )
+        if pool_machines is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Pool Machines</div>'
+                f'<div {stat_val}>{pool_machines}</div></div>'
+            )
+        if pool_cpus is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Pool CPUs</div>'
+                f'<div {stat_val}>{pool_cpus}</div></div>'
+            )
+        if pool_gpus is not None and pool_gpus > 0:
+            parts.append(
+                f'<div><div {stat_lbl}>Pool GPUs</div>'
+                f'<div {stat_val}>{pool_gpus}</div></div>'
+            )
+        if hosts:
+            host_str = ", ".join(html.escape(h) for h in hosts)
+            parts.append(
+                f'<div><div {stat_lbl}>Hosts</div>'
+                f'<div style="font-size:12px;color:#475569">{host_str}</div></div>'
+            )
+        parts.append('</div>')
+
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
 class WorkflowVisualizerWidget(anywidget.AnyWidget):
     """Interactive DAG visualization of a Pegasus workflow.
 
@@ -996,6 +1224,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
     show_files = traitlets.Bool(False).tag(sync=True)
     workflow_info = traitlets.Dict({}).tag(sync=True)
     pool_status = traitlets.Dict({}).tag(sync=True)
+    workflow_stats = traitlets.Dict({}).tag(sync=True)
     status_message = traitlets.Unicode("").tag(sync=True)
     source_mode = traitlets.Unicode("STATIC").tag(sync=True)
     source_detail = traitlets.Unicode("").tag(sync=True)
@@ -1134,6 +1363,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         self.event_log = self._consumer.event_log[:100]  # cap at 100 entries
         self.workflow_state = self._consumer.workflow_state
         self.pool_status = self._consumer.pool_status
+        self.workflow_stats = self._consumer.workflow_stats
 
         # Merge consumer workflow_info into existing info (preserves parser-seeded fields)
         consumer_info = self._consumer.workflow_info
@@ -1222,8 +1452,9 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         header = self._render_header_html()
         svg = self._repr_html_()
         pool_html = _render_pool_status(dict(self.pool_status))
+        stats_html = _render_workflow_stats(dict(self.workflow_stats))
         event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
-        return {"text/html": f"{header}{svg}{pool_html}{event_table}"}
+        return {"text/html": f"{header}{svg}{pool_html}{stats_html}{event_table}"}
 
     def _render_header_html(self) -> str:
         """Render the workflow info header bar."""
@@ -1283,13 +1514,14 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
                 header = self._render_header_html()
                 svg = self._repr_html_()
                 pool_html = _render_pool_status(dict(self.pool_status))
+                stats_html = _render_workflow_stats(dict(self.workflow_stats))
                 event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
                 refresh_note = (
                     f'<div style="font-family:system-ui,sans-serif;font-size:11px;'
                     f'color:#94a3b8;text-align:right;padding:2px 4px">'
                     f'Refreshing every {refresh}s &mdash; Ctrl-C to stop</div>'
                 )
-                display(HTML(f"{header}{svg}{pool_html}{event_table}{refresh_note}"))
+                display(HTML(f"{header}{svg}{pool_html}{stats_html}{event_table}{refresh_note}"))
 
                 # Stop if workflow reached a terminal state
                 if self.workflow_state in ("SUCCESS", "FAILED", "UNKNOWN") and self._consumer and not self._polling:
@@ -1324,8 +1556,9 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         header = self._render_header_html()
         svg = self._repr_html_()
         pool_html = _render_pool_status(dict(self.pool_status))
+        stats_html = _render_workflow_stats(dict(self.workflow_stats))
         event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
-        display(HTML(f"{header}{svg}{pool_html}{event_table}"))
+        display(HTML(f"{header}{svg}{pool_html}{stats_html}{event_table}"))
 
     def summary(self) -> None:
         """Print a text summary of the workflow graph."""

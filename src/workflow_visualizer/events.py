@@ -54,6 +54,9 @@ class EventConsumer:
         # HTCondor history data keyed by DAGNodeName
         self._history: Dict[str, Dict[str, Any]] = {}
 
+        # Workflow stats synopsis from workflow_stats event
+        self._workflow_stats: Dict[str, Any] = {}
+
     def build_id_map(self, workflow_nodes: List[Dict[str, Any]]) -> None:
         """Build mapping from exec_job_id to workflow.yml node id.
 
@@ -367,6 +370,11 @@ class EventConsumer:
             if pool:
                 self._pool_status = pool
 
+        elif etype == "workflow_stats":
+            stats = ev.get("stats", {})
+            if stats:
+                self._workflow_stats = stats
+
         elif etype == "workflow_end":
             self._wf_state = ev.get("wf_state", self._wf_state)
             self._wf_status = ev.get("wf_status", self._wf_status)
@@ -504,6 +512,11 @@ class EventConsumer:
         return dict(self._pool_status)
 
     @property
+    def workflow_stats(self) -> Dict[str, Any]:
+        """Workflow stats synopsis from workflow_stats event."""
+        return dict(self._workflow_stats)
+
+    @property
     def workflow_info(self) -> Dict[str, Any]:
         """Workflow metadata extracted from the workflow_start event."""
         info: Dict[str, Any] = {}
@@ -552,6 +565,7 @@ class EventConsumer:
         self._wf_elapsed = None
         self._pool_status.clear()
         self._history.clear()
+        self._workflow_stats.clear()
 
 
 class RemoteEventConsumer:
@@ -660,6 +674,10 @@ class RemoteEventConsumer:
     @property
     def pool_status(self) -> Dict[str, Any]:
         return self._consumer.pool_status
+
+    @property
+    def workflow_stats(self) -> Dict[str, Any]:
+        return self._consumer.workflow_stats
 
     @property
     def workflow_info(self) -> Dict[str, Any]:

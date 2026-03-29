@@ -700,6 +700,128 @@ function renderInfoBar(infoBar, model) {
   }
 }
 
+// ── Workflow Synopsis Panel ─────────────────────────────────────────────────
+
+function fmtDuration(s) {
+  if (s == null || s < 0) return "-";
+  s = Math.round(s);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  if (m < 60) return sec > 0 ? `${m}m${String(sec).padStart(2, "0")}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  return min > 0 ? `${h}h${String(min).padStart(2, "0")}m` : `${h}h`;
+}
+
+function fmtMemKB(kb) {
+  if (kb == null || kb < 0) return "-";
+  if (kb < 1024) return kb + " KB";
+  const mb = kb / 1024;
+  if (mb < 1024) return mb.toFixed(1) + " MB";
+  return (mb / 1024).toFixed(2) + " GB";
+}
+
+function fmtBytesVal(b) {
+  if (b == null || b < 0) return "-";
+  if (b < 1024) return b + " B";
+  const kb = b / 1024;
+  if (kb < 1024) return kb.toFixed(1) + " KB";
+  const mb = kb / 1024;
+  if (mb < 1024) return mb.toFixed(1) + " MB";
+  return (mb / 1024).toFixed(2) + " GB";
+}
+
+function fmtPct(v) {
+  if (v == null) return "-";
+  return (v * 100).toFixed(1) + "%";
+}
+
+function statHTML(label, value, valueStyle) {
+  const vs = valueStyle || "";
+  return `<div class="wfviz-stats-item"><div class="wfviz-stats-label">${label}</div><div class="wfviz-stats-value" ${vs}>${value}</div></div>`;
+}
+
+function renderWorkflowStats(panel, model) {
+  const stats = model.get("workflow_stats") || {};
+  const hasData = stats.total_jobs != null;
+  panel.style("display", hasData ? "block" : "none");
+  if (!hasData) return;
+
+  let html = '<div class="wfviz-stats-title">Workflow Synopsis</div>';
+
+  // Jobs section
+  html += '<div class="wfviz-stats-section-label">Jobs</div><div class="wfviz-stats-row">';
+  html += statHTML("Total", stats.total_jobs);
+  if (stats.compute_jobs != null) html += statHTML("Compute", stats.compute_jobs);
+  if (stats.infra_jobs != null) html += statHTML("Infra", stats.infra_jobs);
+  if (stats.succeeded != null) {
+    const c = stats.succeeded === stats.total_jobs ? 'style="color:#16a34a"' : '';
+    html += statHTML("Succeeded", stats.succeeded, c);
+  }
+  if (stats.failed != null) {
+    const c = stats.failed > 0 ? 'style="color:#dc2626"' : '';
+    html += statHTML("Failed", stats.failed, c);
+  }
+  if (stats.held != null && stats.held > 0) {
+    html += statHTML("Held", stats.held, 'style="color:#9333ea"');
+  }
+  html += '</div>';
+
+  // Timing section
+  if (stats.wall_time != null || stats.total_compute_time != null) {
+    html += '<div class="wfviz-stats-section-label">Timing</div><div class="wfviz-stats-row">';
+    if (stats.wall_time != null) html += statHTML("Wall Time", fmtDuration(stats.wall_time));
+    if (stats.total_compute_time != null) html += statHTML("Total Compute", fmtDuration(stats.total_compute_time));
+    if (stats.parallelism != null) html += statHTML("Parallelism", stats.parallelism.toFixed(2) + "x");
+    html += '</div>';
+  }
+
+  // Job Duration section
+  if (stats.dur_min != null) {
+    html += '<div class="wfviz-stats-section-label">Job Duration</div><div class="wfviz-stats-row">';
+    html += statHTML("Min", fmtDuration(stats.dur_min));
+    if (stats.dur_max != null) html += statHTML("Max", fmtDuration(stats.dur_max));
+    if (stats.dur_mean != null) html += statHTML("Mean", fmtDuration(stats.dur_mean));
+    if (stats.dur_median != null) html += statHTML("Median", fmtDuration(stats.dur_median));
+    if (stats.longest_job_name) html += statHTML("Longest", `<span class="wfviz-stats-name">${stats.longest_job_name}</span>`);
+    if (stats.shortest_job_name) html += statHTML("Shortest", `<span class="wfviz-stats-name">${stats.shortest_job_name}</span>`);
+    html += '</div>';
+  }
+
+  // Memory section
+  if (stats.peak_maxrss_kb != null) {
+    html += '<div class="wfviz-stats-section-label">Memory</div><div class="wfviz-stats-row">';
+    html += statHTML("Peak RSS", fmtMemKB(stats.peak_maxrss_kb));
+    if (stats.peak_maxrss_job) html += statHTML("Peak Job", `<span class="wfviz-stats-name">${stats.peak_maxrss_job}</span>`);
+    if (stats.mean_maxrss_kb != null) html += statHTML("Mean RSS", fmtMemKB(Math.round(stats.mean_maxrss_kb)));
+    html += '</div>';
+  }
+
+  // Efficiency section
+  if (stats.cpu_eff_mean != null || stats.mem_eff_mean != null) {
+    html += '<div class="wfviz-stats-section-label">Efficiency</div><div class="wfviz-stats-row">';
+    if (stats.cpu_eff_mean != null) html += statHTML("CPU Eff (mean)", fmtPct(stats.cpu_eff_mean));
+    if (stats.cpu_eff_min != null && stats.cpu_eff_max != null) html += statHTML("CPU Eff (range)", fmtPct(stats.cpu_eff_min) + " – " + fmtPct(stats.cpu_eff_max));
+    if (stats.mem_eff_mean != null) html += statHTML("Mem Eff (mean)", fmtPct(stats.mem_eff_mean));
+    html += '</div>';
+  }
+
+  // Resources section
+  if (stats.cpu_seconds != null || stats.hosts) {
+    html += '<div class="wfviz-stats-section-label">Resources</div><div class="wfviz-stats-row">';
+    if (stats.cpu_seconds != null) html += statHTML("CPU Seconds", fmtDuration(stats.cpu_seconds));
+    if (stats.transfer_bytes != null) html += statHTML("Data Transfer", fmtBytesVal(stats.transfer_bytes));
+    if (stats.pool_machines != null) html += statHTML("Pool Machines", stats.pool_machines);
+    if (stats.pool_total_cpus != null) html += statHTML("Pool CPUs", stats.pool_total_cpus);
+    if (stats.pool_total_gpus != null && stats.pool_total_gpus > 0) html += statHTML("Pool GPUs", stats.pool_total_gpus);
+    if (stats.hosts && stats.hosts.length) html += statHTML("Hosts", `<span class="wfviz-stats-name">${stats.hosts.join(", ")}</span>`);
+    html += '</div>';
+  }
+
+  panel.html(html);
+}
+
 // ── Pool Resources Panel ───────────────────────────────────────────────────
 
 function fmtMemMB(mb) {
@@ -804,6 +926,10 @@ function render({ model, el }) {
   const poolPanel = container.append("div").attr("class", "wfviz-pool-panel");
   renderPoolStatus(poolPanel, model);
 
+  // Workflow synopsis panel
+  const statsPanel = container.append("div").attr("class", "wfviz-stats-panel");
+  renderWorkflowStats(statsPanel, model);
+
   // Event log panel
   const eventPanel = container.append("div").attr("class", "wfviz-event-panel");
 
@@ -821,10 +947,11 @@ function render({ model, el }) {
     const colors = model.get("state_colors") || DEFAULT_COLORS;
     const showFiles = model.get("show_files");
 
-    // Update toolbar, info bar, and pool panel
+    // Update toolbar, info bar, pool panel, and stats panel
     buildToolbar(toolbar, model);
     renderInfoBar(infoBar, model);
     renderPoolStatus(poolPanel, model);
+    renderWorkflowStats(statsPanel, model);
 
     // If no graph data, show placeholder
     if (!graphData || !graphData.nodes || graphData.nodes.length === 0) {
@@ -911,6 +1038,7 @@ function render({ model, el }) {
   model.on("change:source_mode", update);
   model.on("change:source_detail", update);
   model.on("change:pool_status", update);
+  model.on("change:workflow_stats", update);
 }
 
 export default { render };
