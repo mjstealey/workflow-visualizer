@@ -614,6 +614,46 @@ marker#wfviz-arrowhead path {
     color: #64748b;
 }
 
+/* ── Type column ── */
+
+.wfviz-event-col-type {
+    color: #64748b;
+}
+
+/* ── Job metadata grid (expanded detail) ── */
+
+.wfviz-event-meta {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 2px 12px;
+    font-size: 11px;
+    padding: 6px 12px 6px 20px;
+    background: #fafbfc;
+}
+
+.wfviz-event-meta-key {
+    color: #94a3b8;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.wfviz-event-meta-val {
+    color: #475569;
+    word-break: break-all;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 10px;
+}
+
+/* ── State history label ── */
+
+.wfviz-event-history-label {
+    font-size: 11px;
+    color: #475569;
+    font-weight: 600;
+    padding: 4px 12px 2px 20px;
+    background: #fafbfc;
+}
+
 /* ── Diagnostic rows (hold reasons, errors) ── */
 
 .wfviz-event-diag-icon {

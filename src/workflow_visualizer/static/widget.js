@@ -382,16 +382,18 @@ function buildJobGroups(eventLog) {
   return groupOrder;
 }
 
-function renderEventLog(panel, eventLog, colors, expandedJobs) {
+function renderEventLog(panel, eventLog, colors, expandedJobs, jobStates) {
   // Ensure header exists
   let header = panel.select(".wfviz-event-header");
   if (header.empty()) {
     header = panel.append("div").attr("class", "wfviz-event-header").html(
       `<span class="wfviz-event-col wfviz-event-col-name">Job</span>` +
+      `<span class="wfviz-event-col">Type</span>` +
       `<span class="wfviz-event-col">State</span>` +
       `<span class="wfviz-event-col">Start</span>` +
       `<span class="wfviz-event-col">End</span>` +
-      `<span class="wfviz-event-col">Duration</span>`
+      `<span class="wfviz-event-col">Duration</span>` +
+      `<span class="wfviz-event-col">Memory</span>`
     );
   }
 
@@ -399,6 +401,7 @@ function renderEventLog(panel, eventLog, colors, expandedJobs) {
   const panelNode = panel.node();
   panelNode.__wfviz_eventLog = eventLog;
   panelNode.__wfviz_colors = colors;
+  panelNode.__wfviz_jobStates = jobStates;
 
   // Install a single delegated click handler on the panel (once)
   if (!panelNode.__wfviz_delegated) {
@@ -421,6 +424,7 @@ function renderEventLog(panel, eventLog, colors, expandedJobs) {
             panelNode.__wfviz_eventLog,
             panelNode.__wfviz_colors,
             expandedJobs,
+            panelNode.__wfviz_jobStates,
           );
           break;
         }
@@ -450,54 +454,111 @@ function renderEventLog(panel, eventLog, colors, expandedJobs) {
   groupAll.each(function(group) {
     const el = d3.select(this);
     const isExpanded = expandedJobs.has(group.key);
-    const hasSubRows = group.transitions.length > 1;
+    const hasEvents = group.transitions.length > 0;
     el.classed("expanded", isExpanded);
+
+    // Look up enriched job data from jobStates
+    const jd = (jobStates || {})[group.key] || {};
+    const typeDesc = group.events[0]?.type_desc || jd.type_desc || "";
+    const memFmt = jd.maxrss_fmt || (group.events[0]?.maxrss_fmt) || "-";
 
     // ── Primary row ──
     const primary = el.select(".wfviz-event-primary");
     const c = getColor(group.currentState, colors);
     const stateStyle = `background:${c.fill};color:${c.stroke};`;
 
-    const chevron = hasSubRows
+    const chevron = hasEvents
       ? `<span class="wfviz-event-chevron">${isExpanded ? "\u25BE" : "\u25B8"}</span>`
       : `<span class="wfviz-event-chevron-spacer"></span>`;
-    const count = hasSubRows ? `<span class="wfviz-event-count">${group.transitions.length}</span>` : "";
+    const count = group.transitions.length > 1 ? `<span class="wfviz-event-count">${group.transitions.length}</span>` : "";
     const diagIcon = group.holdReason ? `<span class="wfviz-event-diag-icon" title="${group.holdReason.replace(/"/g, '&quot;')}">&#x26A0;</span>` : "";
 
     primary.html(
       `<span class="wfviz-event-col wfviz-event-col-name" title="${group.execId}">${chevron}${group.key}${count}${diagIcon}</span>` +
+      `<span class="wfviz-event-col wfviz-event-col-type">${typeDesc}</span>` +
       `<span class="wfviz-event-col"><span class="wfviz-event-state" style="${stateStyle}">${group.currentState}</span></span>` +
       `<span class="wfviz-event-col">${fmtTs(group.startTs)}</span>` +
       `<span class="wfviz-event-col">${fmtTs(group.endTs)}</span>` +
-      `<span class="wfviz-event-col">${fmtDur(group.totalDuration)}</span>`
+      `<span class="wfviz-event-col">${fmtDur(group.totalDuration)}</span>` +
+      `<span class="wfviz-event-col">${memFmt}</span>`
     );
 
-    primary.classed("wfviz-event-expandable", hasSubRows);
-    primary.attr("data-group-key", hasSubRows ? group.key : null);
+    primary.classed("wfviz-event-expandable", hasEvents);
+    primary.attr("data-group-key", hasEvents ? group.key : null);
 
-    // ── Sub-rows ──
+    // ── Expanded detail ──
     const subsContainer = el.select(".wfviz-event-subs");
     subsContainer.style("display", isExpanded ? "block" : "none");
     subsContainer.selectAll("*").remove();
 
-    if (isExpanded && hasSubRows) {
-      for (const tr of group.transitions) {
-        const sc = getColor(tr.state, colors);
-        const ss = `background:${sc.fill};color:${sc.stroke};`;
+    if (isExpanded) {
+      // ── Job metadata grid ──
+      const meta = [];
+      const latest = group.events[0] || {};
+      if (latest.node_id) meta.push(["Node ID", latest.node_id]);
+      if (jd.transformation || latest.transformation) meta.push(["Transformation", jd.transformation || latest.transformation]);
+      if (jd.task_argv || latest.task_argv) meta.push(["Arguments", jd.task_argv || latest.task_argv]);
+      if (jd.maxrss != null) {
+        meta.push(["Peak RSS", `${jd.maxrss_fmt || jd.maxrss} (${jd.maxrss} KB)`]);
+      } else if (latest.maxrss != null) {
+        meta.push(["Peak RSS", `${latest.maxrss_fmt || latest.maxrss} (${latest.maxrss} KB)`]);
+      }
+      if (jd.stdout_file || latest.stdout_file) meta.push(["Stdout", jd.stdout_file || latest.stdout_file]);
+      if (jd.stderr_file || latest.stderr_file) meta.push(["Stderr", jd.stderr_file || latest.stderr_file]);
+      if (jd.hold_reason || latest.hold_reason) meta.push(["Hold reason", jd.hold_reason || latest.hold_reason]);
+
+      // HTCondor enriched metrics
+      if (jd.wall_time) meta.push(["Wall time", jd.wall_time]);
+      if (jd.cpu_time) meta.push(["CPU time", jd.cpu_time]);
+      if (jd.cpu_efficiency_fmt) meta.push(["CPU efficiency", jd.cpu_efficiency_fmt]);
+      if (jd.memory_efficiency_fmt) meta.push(["Memory efficiency", jd.memory_efficiency_fmt]);
+      if (jd.image_size_fmt) meta.push(["Peak memory", jd.image_size_fmt]);
+      if (jd.disk_usage_fmt) meta.push(["Disk usage", jd.disk_usage_fmt]);
+      if (jd.bytes_recvd_fmt) meta.push(["Bytes in", jd.bytes_recvd_fmt]);
+      if (jd.bytes_sent_fmt) meta.push(["Bytes out", jd.bytes_sent_fmt]);
+      if (jd.queue_wait && jd.queue_wait !== "-") meta.push(["Queue wait", jd.queue_wait]);
+      if (jd.remote_host) meta.push(["Remote host", jd.remote_host]);
+      // Requested resources
+      const resParts = [];
+      if (jd.request_cpus) resParts.push(`${jd.request_cpus} CPU`);
+      if (jd.request_memory) resParts.push(`${jd.request_memory} MB`);
+      if (jd.request_gpus && jd.request_gpus > 0) resParts.push(`${jd.request_gpus} GPU`);
+      if (resParts.length) meta.push(["Requested", resParts.join(", ")]);
+      if (jd.num_job_starts != null && jd.num_job_starts > 1) meta.push(["Restarts", String(jd.num_job_starts)]);
+
+      if (meta.length > 0) {
+        let metaHtml = '<div class="wfviz-event-meta">';
+        for (const [k, v] of meta) {
+          metaHtml += `<span class="wfviz-event-meta-key">${k}</span>`;
+          metaHtml += `<span class="wfviz-event-meta-val">${v}</span>`;
+        }
+        metaHtml += '</div>';
+        subsContainer.append("div").html(metaHtml);
+      }
+
+      // ── State history ──
+      if (group.transitions.length > 1) {
         subsContainer.append("div")
-          .attr("class", "wfviz-event-sub")
-          .html(
-            `<span class="wfviz-event-col wfviz-event-col-name wfviz-event-sub-name">${tr.rawState || tr.state}</span>` +
-            `<span class="wfviz-event-col"><span class="wfviz-event-state" style="${ss}">${tr.state}</span></span>` +
-            `<span class="wfviz-event-col">${fmtTs(tr.start)}</span>` +
-            `<span class="wfviz-event-col">${fmtTs(tr.end)}</span>` +
-            `<span class="wfviz-event-col">${fmtDur(tr.duration)}</span>`
-          );
-        // Show hold reason as a diagnostic row below the HELD transition
-        if (tr.holdReason) {
+          .attr("class", "wfviz-event-history-label")
+          .text("State history");
+
+        for (const tr of group.transitions) {
+          const sc = getColor(tr.state, colors);
+          const ss = `background:${sc.fill};color:${sc.stroke};`;
           subsContainer.append("div")
-            .attr("class", "wfviz-event-diag")
-            .html(`<span class="wfviz-event-diag-text">${tr.holdReason}</span>`);
+            .attr("class", "wfviz-event-sub")
+            .html(
+              `<span class="wfviz-event-col wfviz-event-col-name wfviz-event-sub-name">${tr.rawState || tr.state}</span>` +
+              `<span class="wfviz-event-col"><span class="wfviz-event-state" style="${ss}">${tr.state}</span></span>` +
+              `<span class="wfviz-event-col">${fmtTs(tr.start)}</span>` +
+              `<span class="wfviz-event-col">${fmtTs(tr.end)}</span>` +
+              `<span class="wfviz-event-col">${fmtDur(tr.duration)}</span>`
+            );
+          if (tr.holdReason) {
+            subsContainer.append("div")
+              .attr("class", "wfviz-event-diag")
+              .html(`<span class="wfviz-event-diag-text">${tr.holdReason}</span>`);
+          }
         }
       }
     }
@@ -1007,7 +1068,7 @@ function render({ model, el }) {
     renderDAG(container, g, colors, jobStates, tooltip);
 
     // Render event log
-    renderEventLog(eventPanel, eventLog, colors, expandedJobs);
+    renderEventLog(eventPanel, eventLog, colors, expandedJobs, jobStates);
   }
 
   function fitToView(svg, g, zoom) {

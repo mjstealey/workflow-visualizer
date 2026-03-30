@@ -1442,9 +1442,14 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         no JavaScript required, so it survives classic Notebook's HTML sanitizer.
         """
         try:
-            bundle = super()._repr_mimebundle_(**kwargs)
+            result = super()._repr_mimebundle_(**kwargs)
+            # anywidget may return (data, metadata) tuple or a plain dict
+            if isinstance(result, tuple):
+                bundle = result[0]
+            else:
+                bundle = result
             if bundle and "application/vnd.jupyter.widget-view+json" in bundle:
-                return bundle
+                return result
         except Exception:
             pass
         # Ensure events are loaded for the HTML fallback
