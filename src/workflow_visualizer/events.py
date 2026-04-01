@@ -8,7 +8,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .state import display_state, fmt_timestamp, fmt_duration, fmt_memory
+from .state import (
+    display_state, fmt_timestamp, fmt_duration, fmt_memory, fmt_memory_mb,
+    fmt_bytes, fmt_percent, compute_cpu_efficiency, compute_memory_efficiency,
+)
 
 
 class EventConsumer:
@@ -44,6 +47,15 @@ class EventConsumer:
 
         # exec_job_id -> workflow.yml node id mapping
         self._id_map: Dict[str, str] = {}
+
+        # Pool status from pool_status events
+        self._pool_status: Dict[str, Any] = {}
+
+        # HTCondor history data keyed by DAGNodeName
+        self._history: Dict[str, Dict[str, Any]] = {}
+
+        # Workflow stats synopsis from workflow_stats event
+        self._workflow_stats: Dict[str, Any] = {}
 
     def build_id_map(self, workflow_nodes: List[Dict[str, Any]]) -> None:
         """Build mapping from exec_job_id to workflow.yml node id.
@@ -264,11 +276,104 @@ class EventConsumer:
                             js["request_memory"] = classad["RequestMemory"]
                         if classad.get("RequestDisk") is not None:
                             js["request_disk"] = classad["RequestDisk"]
+                        # Tier 1: additional resource fields
+                        if classad.get("RequestGpus") is not None:
+                            js["request_gpus"] = classad["RequestGpus"]
+                        if classad.get("NumJobStarts") is not None:
+                            js["num_job_starts"] = classad["NumJobStarts"]
+                        if classad.get("AccountingGroup"):
+                            js["accounting_group"] = classad["AccountingGroup"]
+                        # Tier 2: file transfer I/O
+                        if classad.get("TransferInputSizeMB") is not None:
+                            js["transfer_input_mb"] = classad["TransferInputSizeMB"]
+                        if classad.get("BytesSent") is not None:
+                            js["bytes_sent"] = classad["BytesSent"]
+                        if classad.get("BytesRecvd") is not None:
+                            js["bytes_recvd"] = classad["BytesRecvd"]
+                        # Queue wait time
+                        qdate = classad.get("QDate")
+                        job_start = classad.get("JobStartDate")
+                        if qdate and job_start and job_start > qdate:
+                            js["queue_wait"] = job_start - qdate
+                        # Remote host
+                        remote_host = classad.get("RemoteHost")
+                        if remote_host:
+                            js["remote_host"] = remote_host
                         # Execution site from Pegasus ClassAd
                         site = classad.get("pegasus_site")
                         if site:
                             js["site"] = site
                         break
+
+        elif etype == "htcondor_history":
+            # Tier 3: post-completion metrics from condor_history
+            for classad in ev.get("jobs", []):
+                dag_node = classad.get("DAGNodeName", "")
+                if not dag_node:
+                    continue
+                # Store raw history data
+                self._history[dag_node] = classad
+                # Find matching job and enrich with history metrics
+                for jid, js in self._job_state.items():
+                    if js["exec_job_id"] == dag_node:
+                        if classad.get("RemoteWallClockTime") is not None:
+                            js["wall_time"] = classad["RemoteWallClockTime"]
+                        if classad.get("RemoteUserCpu") is not None:
+                            js["remote_user_cpu"] = classad["RemoteUserCpu"]
+                        if classad.get("RemoteSysCpu") is not None:
+                            js["remote_sys_cpu"] = classad["RemoteSysCpu"]
+                        cpu_user = classad.get("RemoteUserCpu")
+                        cpu_sys = classad.get("RemoteSysCpu")
+                        if cpu_user is not None or cpu_sys is not None:
+                            js["cpu_time"] = (cpu_user or 0) + (cpu_sys or 0)
+                        if classad.get("CumulativeRemoteUserCpu") is not None:
+                            js["cumulative_cpu"] = classad["CumulativeRemoteUserCpu"]
+                        if classad.get("ImageSize") is not None:
+                            js["image_size"] = classad["ImageSize"]
+                        if classad.get("DiskUsage") is not None:
+                            js["disk_usage"] = classad["DiskUsage"]
+                        if classad.get("LastRemoteHost"):
+                            js["remote_host"] = classad["LastRemoteHost"]
+                        if classad.get("BytesSent") is not None:
+                            js["bytes_sent"] = classad["BytesSent"]
+                        if classad.get("BytesRecvd") is not None:
+                            js["bytes_recvd"] = classad["BytesRecvd"]
+                        if classad.get("ExitCode") is not None:
+                            js["exitcode"] = classad["ExitCode"]
+                        if classad.get("NumJobStarts") is not None:
+                            js["num_job_starts"] = classad["NumJobStarts"]
+                        # Resource requests (may not have been seen via poll)
+                        if classad.get("RequestCpus") is not None:
+                            js["request_cpus"] = classad["RequestCpus"]
+                        if classad.get("RequestMemory") is not None:
+                            js["request_memory"] = classad["RequestMemory"]
+                        if classad.get("RequestDisk") is not None:
+                            js["request_disk"] = classad["RequestDisk"]
+                        if classad.get("RequestGpus") is not None:
+                            js["request_gpus"] = classad["RequestGpus"]
+                        # Compute derived metrics
+                        js["cpu_efficiency"] = compute_cpu_efficiency(
+                            classad.get("RemoteUserCpu"),
+                            classad.get("RemoteSysCpu"),
+                            classad.get("RemoteWallClockTime"),
+                            js.get("request_cpus"),
+                        )
+                        js["memory_efficiency"] = compute_memory_efficiency(
+                            classad.get("ImageSize"),
+                            js.get("request_memory"),
+                        )
+                        break
+
+        elif etype == "pool_status":
+            # Tier 4: pool-wide resource visibility
+            pool = ev.get("pool", {})
+            if pool:
+                self._pool_status = pool
+
+        elif etype == "workflow_stats":
+            stats = ev.get("stats", {})
+            if stats:
+                self._workflow_stats = stats
 
         elif etype == "workflow_end":
             self._wf_state = ev.get("wf_state", self._wf_state)
@@ -342,6 +447,46 @@ class EventConsumer:
                 result[key]["request_memory"] = js["request_memory"]
             if js.get("request_disk") is not None:
                 result[key]["request_disk"] = js["request_disk"]
+            # Tier 1 additions
+            if js.get("request_gpus") is not None:
+                result[key]["request_gpus"] = js["request_gpus"]
+            if js.get("num_job_starts") is not None:
+                result[key]["num_job_starts"] = js["num_job_starts"]
+            if js.get("accounting_group"):
+                result[key]["accounting_group"] = js["accounting_group"]
+            # Tier 2: transfer I/O
+            if js.get("transfer_input_mb") is not None:
+                result[key]["transfer_input_mb"] = js["transfer_input_mb"]
+            if js.get("bytes_sent") is not None:
+                result[key]["bytes_sent"] = js["bytes_sent"]
+                result[key]["bytes_sent_fmt"] = fmt_bytes(js["bytes_sent"])
+            if js.get("bytes_recvd") is not None:
+                result[key]["bytes_recvd"] = js["bytes_recvd"]
+                result[key]["bytes_recvd_fmt"] = fmt_bytes(js["bytes_recvd"])
+            if js.get("queue_wait") is not None:
+                result[key]["queue_wait"] = fmt_duration(js["queue_wait"])
+            if js.get("remote_host"):
+                result[key]["remote_host"] = js["remote_host"]
+            # Tier 3: post-completion
+            if js.get("image_size") is not None:
+                result[key]["image_size"] = js["image_size"]
+                result[key]["image_size_fmt"] = fmt_memory(js["image_size"])
+            if js.get("disk_usage") is not None:
+                result[key]["disk_usage"] = js["disk_usage"]
+                result[key]["disk_usage_fmt"] = fmt_memory(js["disk_usage"])
+            if js.get("remote_user_cpu") is not None:
+                result[key]["remote_user_cpu"] = fmt_duration(js["remote_user_cpu"])
+            if js.get("remote_sys_cpu") is not None:
+                result[key]["remote_sys_cpu"] = fmt_duration(js["remote_sys_cpu"])
+            if js.get("cumulative_cpu") is not None:
+                result[key]["cumulative_cpu"] = fmt_duration(js["cumulative_cpu"])
+            # Derived metrics
+            if js.get("cpu_efficiency") is not None:
+                result[key]["cpu_efficiency"] = js["cpu_efficiency"]
+                result[key]["cpu_efficiency_fmt"] = fmt_percent(js["cpu_efficiency"])
+            if js.get("memory_efficiency") is not None:
+                result[key]["memory_efficiency"] = js["memory_efficiency"]
+                result[key]["memory_efficiency_fmt"] = fmt_percent(js["memory_efficiency"])
             if js.get("hold_reason"):
                 result[key]["hold_reason"] = js["hold_reason"]
                 result[key]["hold_reason_code"] = js.get("hold_reason_code")
@@ -360,6 +505,16 @@ class EventConsumer:
     @property
     def is_complete(self) -> bool:
         return self._workflow_complete
+
+    @property
+    def pool_status(self) -> Dict[str, Any]:
+        """Current HTCondor pool status from pool_status events."""
+        return dict(self._pool_status)
+
+    @property
+    def workflow_stats(self) -> Dict[str, Any]:
+        """Workflow stats synopsis from workflow_stats event."""
+        return dict(self._workflow_stats)
 
     @property
     def workflow_info(self) -> Dict[str, Any]:
@@ -408,6 +563,9 @@ class EventConsumer:
         self._wf_done = None
         self._wf_failed = None
         self._wf_elapsed = None
+        self._pool_status.clear()
+        self._history.clear()
+        self._workflow_stats.clear()
 
 
 class RemoteEventConsumer:
@@ -512,6 +670,14 @@ class RemoteEventConsumer:
     @property
     def is_complete(self) -> bool:
         return self._consumer.is_complete
+
+    @property
+    def pool_status(self) -> Dict[str, Any]:
+        return self._consumer.pool_status
+
+    @property
+    def workflow_stats(self) -> Dict[str, Any]:
+        return self._consumer.workflow_stats
 
     @property
     def workflow_info(self) -> Dict[str, Any]:

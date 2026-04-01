@@ -239,9 +239,28 @@ function showTooltip(tooltip, event, node, jobState) {
     if (jobState.duration) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Duration</span><span class="wfviz-tooltip-val">${jobState.duration}</span></div>`;
     if (jobState.maxrss_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Peak RSS</span><span class="wfviz-tooltip-val">${jobState.maxrss_fmt}</span></div>`;
     if (jobState.site) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Site</span><span class="wfviz-tooltip-val">${jobState.site}</span></div>`;
+    // Resource requests
+    const resParts = [];
+    if (jobState.request_cpus) resParts.push(`${jobState.request_cpus} CPU`);
+    if (jobState.request_memory) resParts.push(`${jobState.request_memory} MB`);
+    if (jobState.request_gpus && jobState.request_gpus > 0) resParts.push(`${jobState.request_gpus} GPU`);
+    if (resParts.length) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Requested</span><span class="wfviz-tooltip-val">${resParts.join(", ")}</span></div>`;
+    // Timing and CPU
+    if (jobState.wall_time) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Wall Time</span><span class="wfviz-tooltip-val">${jobState.wall_time}</span></div>`;
     if (jobState.cpu_time) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">CPU Time</span><span class="wfviz-tooltip-val">${jobState.cpu_time}</span></div>`;
-    if (jobState.request_cpus) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">CPUs</span><span class="wfviz-tooltip-val">${jobState.request_cpus}</span></div>`;
-    if (jobState.request_memory) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Req. Mem</span><span class="wfviz-tooltip-val">${jobState.request_memory} MB</span></div>`;
+    if (jobState.cpu_efficiency_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">CPU Eff.</span><span class="wfviz-tooltip-val">${jobState.cpu_efficiency_fmt}</span></div>`;
+    if (jobState.memory_efficiency_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Mem Eff.</span><span class="wfviz-tooltip-val">${jobState.memory_efficiency_fmt}</span></div>`;
+    // Memory and disk
+    if (jobState.image_size_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Peak Mem</span><span class="wfviz-tooltip-val">${jobState.image_size_fmt}</span></div>`;
+    if (jobState.disk_usage_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Disk</span><span class="wfviz-tooltip-val">${jobState.disk_usage_fmt}</span></div>`;
+    // Transfer I/O
+    if (jobState.bytes_recvd_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Bytes In</span><span class="wfviz-tooltip-val">${jobState.bytes_recvd_fmt}</span></div>`;
+    if (jobState.bytes_sent_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Bytes Out</span><span class="wfviz-tooltip-val">${jobState.bytes_sent_fmt}</span></div>`;
+    // Queue and host
+    if (jobState.queue_wait && jobState.queue_wait !== "-") html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Q. Wait</span><span class="wfviz-tooltip-val">${jobState.queue_wait}</span></div>`;
+    if (jobState.remote_host) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Host</span><span class="wfviz-tooltip-val wfviz-tooltip-mono">${jobState.remote_host}</span></div>`;
+    if (jobState.num_job_starts != null && jobState.num_job_starts > 1) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Restarts</span><span class="wfviz-tooltip-val">${jobState.num_job_starts}</span></div>`;
+    if (jobState.maxrss_fmt) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Peak RSS</span><span class="wfviz-tooltip-val">${jobState.maxrss_fmt}</span></div>`;
     if (jobState.stdout_file) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Stdout</span><span class="wfviz-tooltip-val wfviz-tooltip-mono">${jobState.stdout_file}</span></div>`;
     if (jobState.stderr_file) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Stderr</span><span class="wfviz-tooltip-val wfviz-tooltip-mono">${jobState.stderr_file}</span></div>`;
     if (jobState.hold_reason) html += `<div class="wfviz-tooltip-row wfviz-tooltip-diag"><span class="wfviz-tooltip-key">Hold</span><span class="wfviz-tooltip-val">${jobState.hold_reason}</span></div>`;
@@ -363,16 +382,18 @@ function buildJobGroups(eventLog) {
   return groupOrder;
 }
 
-function renderEventLog(panel, eventLog, colors, expandedJobs) {
+function renderEventLog(panel, eventLog, colors, expandedJobs, jobStates) {
   // Ensure header exists
   let header = panel.select(".wfviz-event-header");
   if (header.empty()) {
     header = panel.append("div").attr("class", "wfviz-event-header").html(
       `<span class="wfviz-event-col wfviz-event-col-name">Job</span>` +
+      `<span class="wfviz-event-col">Type</span>` +
       `<span class="wfviz-event-col">State</span>` +
       `<span class="wfviz-event-col">Start</span>` +
       `<span class="wfviz-event-col">End</span>` +
-      `<span class="wfviz-event-col">Duration</span>`
+      `<span class="wfviz-event-col">Duration</span>` +
+      `<span class="wfviz-event-col">Memory</span>`
     );
   }
 
@@ -380,6 +401,7 @@ function renderEventLog(panel, eventLog, colors, expandedJobs) {
   const panelNode = panel.node();
   panelNode.__wfviz_eventLog = eventLog;
   panelNode.__wfviz_colors = colors;
+  panelNode.__wfviz_jobStates = jobStates;
 
   // Install a single delegated click handler on the panel (once)
   if (!panelNode.__wfviz_delegated) {
@@ -402,6 +424,7 @@ function renderEventLog(panel, eventLog, colors, expandedJobs) {
             panelNode.__wfviz_eventLog,
             panelNode.__wfviz_colors,
             expandedJobs,
+            panelNode.__wfviz_jobStates,
           );
           break;
         }
@@ -431,54 +454,111 @@ function renderEventLog(panel, eventLog, colors, expandedJobs) {
   groupAll.each(function(group) {
     const el = d3.select(this);
     const isExpanded = expandedJobs.has(group.key);
-    const hasSubRows = group.transitions.length > 1;
+    const hasEvents = group.transitions.length > 0;
     el.classed("expanded", isExpanded);
+
+    // Look up enriched job data from jobStates
+    const jd = (jobStates || {})[group.key] || {};
+    const typeDesc = group.events[0]?.type_desc || jd.type_desc || "";
+    const memFmt = jd.maxrss_fmt || (group.events[0]?.maxrss_fmt) || "-";
 
     // ── Primary row ──
     const primary = el.select(".wfviz-event-primary");
     const c = getColor(group.currentState, colors);
     const stateStyle = `background:${c.fill};color:${c.stroke};`;
 
-    const chevron = hasSubRows
+    const chevron = hasEvents
       ? `<span class="wfviz-event-chevron">${isExpanded ? "\u25BE" : "\u25B8"}</span>`
       : `<span class="wfviz-event-chevron-spacer"></span>`;
-    const count = hasSubRows ? `<span class="wfviz-event-count">${group.transitions.length}</span>` : "";
+    const count = group.transitions.length > 1 ? `<span class="wfviz-event-count">${group.transitions.length}</span>` : "";
     const diagIcon = group.holdReason ? `<span class="wfviz-event-diag-icon" title="${group.holdReason.replace(/"/g, '&quot;')}">&#x26A0;</span>` : "";
 
     primary.html(
       `<span class="wfviz-event-col wfviz-event-col-name" title="${group.execId}">${chevron}${group.key}${count}${diagIcon}</span>` +
+      `<span class="wfviz-event-col wfviz-event-col-type">${typeDesc}</span>` +
       `<span class="wfviz-event-col"><span class="wfviz-event-state" style="${stateStyle}">${group.currentState}</span></span>` +
       `<span class="wfviz-event-col">${fmtTs(group.startTs)}</span>` +
       `<span class="wfviz-event-col">${fmtTs(group.endTs)}</span>` +
-      `<span class="wfviz-event-col">${fmtDur(group.totalDuration)}</span>`
+      `<span class="wfviz-event-col">${fmtDur(group.totalDuration)}</span>` +
+      `<span class="wfviz-event-col">${memFmt}</span>`
     );
 
-    primary.classed("wfviz-event-expandable", hasSubRows);
-    primary.attr("data-group-key", hasSubRows ? group.key : null);
+    primary.classed("wfviz-event-expandable", hasEvents);
+    primary.attr("data-group-key", hasEvents ? group.key : null);
 
-    // ── Sub-rows ──
+    // ── Expanded detail ──
     const subsContainer = el.select(".wfviz-event-subs");
     subsContainer.style("display", isExpanded ? "block" : "none");
     subsContainer.selectAll("*").remove();
 
-    if (isExpanded && hasSubRows) {
-      for (const tr of group.transitions) {
-        const sc = getColor(tr.state, colors);
-        const ss = `background:${sc.fill};color:${sc.stroke};`;
+    if (isExpanded) {
+      // ── Job metadata grid ──
+      const meta = [];
+      const latest = group.events[0] || {};
+      if (latest.node_id) meta.push(["Node ID", latest.node_id]);
+      if (jd.transformation || latest.transformation) meta.push(["Transformation", jd.transformation || latest.transformation]);
+      if (jd.task_argv || latest.task_argv) meta.push(["Arguments", jd.task_argv || latest.task_argv]);
+      if (jd.maxrss != null) {
+        meta.push(["Peak RSS", `${jd.maxrss_fmt || jd.maxrss} (${jd.maxrss} KB)`]);
+      } else if (latest.maxrss != null) {
+        meta.push(["Peak RSS", `${latest.maxrss_fmt || latest.maxrss} (${latest.maxrss} KB)`]);
+      }
+      if (jd.stdout_file || latest.stdout_file) meta.push(["Stdout", jd.stdout_file || latest.stdout_file]);
+      if (jd.stderr_file || latest.stderr_file) meta.push(["Stderr", jd.stderr_file || latest.stderr_file]);
+      if (jd.hold_reason || latest.hold_reason) meta.push(["Hold reason", jd.hold_reason || latest.hold_reason]);
+
+      // HTCondor enriched metrics
+      if (jd.wall_time) meta.push(["Wall time", jd.wall_time]);
+      if (jd.cpu_time) meta.push(["CPU time", jd.cpu_time]);
+      if (jd.cpu_efficiency_fmt) meta.push(["CPU efficiency", jd.cpu_efficiency_fmt]);
+      if (jd.memory_efficiency_fmt) meta.push(["Memory efficiency", jd.memory_efficiency_fmt]);
+      if (jd.image_size_fmt) meta.push(["Peak memory", jd.image_size_fmt]);
+      if (jd.disk_usage_fmt) meta.push(["Disk usage", jd.disk_usage_fmt]);
+      if (jd.bytes_recvd_fmt) meta.push(["Bytes in", jd.bytes_recvd_fmt]);
+      if (jd.bytes_sent_fmt) meta.push(["Bytes out", jd.bytes_sent_fmt]);
+      if (jd.queue_wait && jd.queue_wait !== "-") meta.push(["Queue wait", jd.queue_wait]);
+      if (jd.remote_host) meta.push(["Remote host", jd.remote_host]);
+      // Requested resources
+      const resParts = [];
+      if (jd.request_cpus) resParts.push(`${jd.request_cpus} CPU`);
+      if (jd.request_memory) resParts.push(`${jd.request_memory} MB`);
+      if (jd.request_gpus && jd.request_gpus > 0) resParts.push(`${jd.request_gpus} GPU`);
+      if (resParts.length) meta.push(["Requested", resParts.join(", ")]);
+      if (jd.num_job_starts != null && jd.num_job_starts > 1) meta.push(["Restarts", String(jd.num_job_starts)]);
+
+      if (meta.length > 0) {
+        let metaHtml = '<div class="wfviz-event-meta">';
+        for (const [k, v] of meta) {
+          metaHtml += `<span class="wfviz-event-meta-key">${k}</span>`;
+          metaHtml += `<span class="wfviz-event-meta-val">${v}</span>`;
+        }
+        metaHtml += '</div>';
+        subsContainer.append("div").html(metaHtml);
+      }
+
+      // ── State history ──
+      if (group.transitions.length > 1) {
         subsContainer.append("div")
-          .attr("class", "wfviz-event-sub")
-          .html(
-            `<span class="wfviz-event-col wfviz-event-col-name wfviz-event-sub-name">${tr.rawState || tr.state}</span>` +
-            `<span class="wfviz-event-col"><span class="wfviz-event-state" style="${ss}">${tr.state}</span></span>` +
-            `<span class="wfviz-event-col">${fmtTs(tr.start)}</span>` +
-            `<span class="wfviz-event-col">${fmtTs(tr.end)}</span>` +
-            `<span class="wfviz-event-col">${fmtDur(tr.duration)}</span>`
-          );
-        // Show hold reason as a diagnostic row below the HELD transition
-        if (tr.holdReason) {
+          .attr("class", "wfviz-event-history-label")
+          .text("State history");
+
+        for (const tr of group.transitions) {
+          const sc = getColor(tr.state, colors);
+          const ss = `background:${sc.fill};color:${sc.stroke};`;
           subsContainer.append("div")
-            .attr("class", "wfviz-event-diag")
-            .html(`<span class="wfviz-event-diag-text">${tr.holdReason}</span>`);
+            .attr("class", "wfviz-event-sub")
+            .html(
+              `<span class="wfviz-event-col wfviz-event-col-name wfviz-event-sub-name">${tr.rawState || tr.state}</span>` +
+              `<span class="wfviz-event-col"><span class="wfviz-event-state" style="${ss}">${tr.state}</span></span>` +
+              `<span class="wfviz-event-col">${fmtTs(tr.start)}</span>` +
+              `<span class="wfviz-event-col">${fmtTs(tr.end)}</span>` +
+              `<span class="wfviz-event-col">${fmtDur(tr.duration)}</span>`
+            );
+          if (tr.holdReason) {
+            subsContainer.append("div")
+              .attr("class", "wfviz-event-diag")
+              .html(`<span class="wfviz-event-diag-text">${tr.holdReason}</span>`);
+          }
         }
       }
     }
@@ -681,6 +761,185 @@ function renderInfoBar(infoBar, model) {
   }
 }
 
+// ── Workflow Synopsis Panel ─────────────────────────────────────────────────
+
+function fmtDuration(s) {
+  if (s == null || s < 0) return "-";
+  s = Math.round(s);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  if (m < 60) return sec > 0 ? `${m}m${String(sec).padStart(2, "0")}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  return min > 0 ? `${h}h${String(min).padStart(2, "0")}m` : `${h}h`;
+}
+
+function fmtMemKB(kb) {
+  if (kb == null || kb < 0) return "-";
+  if (kb < 1024) return kb + " KB";
+  const mb = kb / 1024;
+  if (mb < 1024) return mb.toFixed(1) + " MB";
+  return (mb / 1024).toFixed(2) + " GB";
+}
+
+function fmtBytesVal(b) {
+  if (b == null || b < 0) return "-";
+  if (b < 1024) return b + " B";
+  const kb = b / 1024;
+  if (kb < 1024) return kb.toFixed(1) + " KB";
+  const mb = kb / 1024;
+  if (mb < 1024) return mb.toFixed(1) + " MB";
+  return (mb / 1024).toFixed(2) + " GB";
+}
+
+function fmtPct(v) {
+  if (v == null) return "-";
+  return (v * 100).toFixed(1) + "%";
+}
+
+function statHTML(label, value, valueStyle) {
+  const vs = valueStyle || "";
+  return `<div class="wfviz-stats-item"><div class="wfviz-stats-label">${label}</div><div class="wfviz-stats-value" ${vs}>${value}</div></div>`;
+}
+
+function renderWorkflowStats(panel, model) {
+  const stats = model.get("workflow_stats") || {};
+  const hasData = stats.total_jobs != null;
+  panel.style("display", hasData ? "block" : "none");
+  if (!hasData) return;
+
+  let html = '<div class="wfviz-stats-title">Workflow Synopsis</div>';
+
+  // Jobs section
+  html += '<div class="wfviz-stats-section-label">Jobs</div><div class="wfviz-stats-row">';
+  html += statHTML("Total", stats.total_jobs);
+  if (stats.compute_jobs != null) html += statHTML("Compute", stats.compute_jobs);
+  if (stats.infra_jobs != null) html += statHTML("Infra", stats.infra_jobs);
+  if (stats.succeeded != null) {
+    const c = stats.succeeded === stats.total_jobs ? 'style="color:#16a34a"' : '';
+    html += statHTML("Succeeded", stats.succeeded, c);
+  }
+  if (stats.failed != null) {
+    const c = stats.failed > 0 ? 'style="color:#dc2626"' : '';
+    html += statHTML("Failed", stats.failed, c);
+  }
+  if (stats.held != null && stats.held > 0) {
+    html += statHTML("Held", stats.held, 'style="color:#9333ea"');
+  }
+  html += '</div>';
+
+  // Timing section
+  if (stats.wall_time != null || stats.total_compute_time != null) {
+    html += '<div class="wfviz-stats-section-label">Timing</div><div class="wfviz-stats-row">';
+    if (stats.wall_time != null) html += statHTML("Wall Time", fmtDuration(stats.wall_time));
+    if (stats.total_compute_time != null) html += statHTML("Total Compute", fmtDuration(stats.total_compute_time));
+    if (stats.parallelism != null) html += statHTML("Parallelism", stats.parallelism.toFixed(2) + "x");
+    html += '</div>';
+  }
+
+  // Job Duration section
+  if (stats.dur_min != null) {
+    html += '<div class="wfviz-stats-section-label">Job Duration</div><div class="wfviz-stats-row">';
+    html += statHTML("Min", fmtDuration(stats.dur_min));
+    if (stats.dur_max != null) html += statHTML("Max", fmtDuration(stats.dur_max));
+    if (stats.dur_mean != null) html += statHTML("Mean", fmtDuration(stats.dur_mean));
+    if (stats.dur_median != null) html += statHTML("Median", fmtDuration(stats.dur_median));
+    if (stats.longest_job_name) html += statHTML("Longest", `<span class="wfviz-stats-name">${stats.longest_job_name}</span>`);
+    if (stats.shortest_job_name) html += statHTML("Shortest", `<span class="wfviz-stats-name">${stats.shortest_job_name}</span>`);
+    html += '</div>';
+  }
+
+  // Memory section
+  if (stats.peak_maxrss_kb != null) {
+    html += '<div class="wfviz-stats-section-label">Memory</div><div class="wfviz-stats-row">';
+    html += statHTML("Peak RSS", fmtMemKB(stats.peak_maxrss_kb));
+    if (stats.peak_maxrss_job) html += statHTML("Peak Job", `<span class="wfviz-stats-name">${stats.peak_maxrss_job}</span>`);
+    if (stats.mean_maxrss_kb != null) html += statHTML("Mean RSS", fmtMemKB(Math.round(stats.mean_maxrss_kb)));
+    html += '</div>';
+  }
+
+  // Efficiency section
+  if (stats.cpu_eff_mean != null || stats.mem_eff_mean != null) {
+    html += '<div class="wfviz-stats-section-label">Efficiency</div><div class="wfviz-stats-row">';
+    if (stats.cpu_eff_mean != null) html += statHTML("CPU Eff (mean)", fmtPct(stats.cpu_eff_mean));
+    if (stats.cpu_eff_min != null && stats.cpu_eff_max != null) html += statHTML("CPU Eff (range)", fmtPct(stats.cpu_eff_min) + " – " + fmtPct(stats.cpu_eff_max));
+    if (stats.mem_eff_mean != null) html += statHTML("Mem Eff (mean)", fmtPct(stats.mem_eff_mean));
+    html += '</div>';
+  }
+
+  // Resources section
+  if (stats.cpu_seconds != null || stats.hosts) {
+    html += '<div class="wfviz-stats-section-label">Resources</div><div class="wfviz-stats-row">';
+    if (stats.cpu_seconds != null) html += statHTML("CPU Seconds", fmtDuration(stats.cpu_seconds));
+    if (stats.transfer_bytes != null) html += statHTML("Data Transfer", fmtBytesVal(stats.transfer_bytes));
+    if (stats.pool_machines != null) html += statHTML("Pool Machines", stats.pool_machines);
+    if (stats.pool_total_cpus != null) html += statHTML("Pool CPUs", stats.pool_total_cpus);
+    if (stats.pool_total_gpus != null && stats.pool_total_gpus > 0) html += statHTML("Pool GPUs", stats.pool_total_gpus);
+    if (stats.hosts && stats.hosts.length) html += statHTML("Hosts", `<span class="wfviz-stats-name">${stats.hosts.join(", ")}</span>`);
+    html += '</div>';
+  }
+
+  panel.html(html);
+}
+
+// ── Pool Resources Panel ───────────────────────────────────────────────────
+
+function fmtMemMB(mb) {
+  if (mb == null || mb < 0) return "-";
+  if (mb < 1024) return mb + " MB";
+  return (mb / 1024).toFixed(1) + " GB";
+}
+
+function renderPoolStatus(panel, model) {
+  const pool = model.get("pool_status") || {};
+  const hasData = pool.total_slots || pool.total_cpus || pool.machines;
+  panel.style("display", hasData ? "flex" : "none");
+  if (!hasData) return;
+
+  panel.html("");
+
+  panel.append("span").attr("class", "wfviz-pool-title").text("Pool Resources");
+
+  if (pool.machines != null) {
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Machines</span><span class="wfviz-pool-value">${pool.machines}</span>`);
+  }
+
+  if (pool.total_slots) {
+    const claimed = pool.claimed_slots || 0;
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Slots</span><span class="wfviz-pool-value">${claimed}/${pool.total_slots} <small>claimed</small></span>`);
+  }
+
+  if (pool.total_cpus) {
+    const idle = pool.idle_cpus || 0;
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">CPUs</span><span class="wfviz-pool-value">${idle}/${pool.total_cpus} <small>idle</small></span>`);
+  }
+
+  if (pool.total_memory_mb != null) {
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Memory</span><span class="wfviz-pool-value">${fmtMemMB(pool.idle_memory_mb)} / ${fmtMemMB(pool.total_memory_mb)} <small>idle</small></span>`);
+  }
+
+  if (pool.total_gpus && pool.total_gpus > 0) {
+    const idleGpus = pool.idle_gpus || 0;
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">GPUs</span><span class="wfviz-pool-value">${idleGpus}/${pool.total_gpus} <small>idle</small></span>`);
+  }
+
+  if (pool.load_avg != null) {
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Load</span><span class="wfviz-pool-value">${pool.load_avg.toFixed(1)}</span>`);
+  }
+
+  if (pool.os_arch) {
+    panel.append("span").attr("class", "wfviz-pool-stat")
+      .html(`<span class="wfviz-pool-label">Platform</span><span class="wfviz-pool-value">${pool.os_arch}</span>`);
+  }
+}
+
 // ── Placeholder (no workflow loaded) ────────────────────────────────────────
 
 function showPlaceholder(viewport, model) {
@@ -724,6 +983,14 @@ function render({ model, el }) {
   // Tooltip
   const tooltip = container.append("div").attr("class", "wfviz-tooltip");
 
+  // Pool resources panel
+  const poolPanel = container.append("div").attr("class", "wfviz-pool-panel");
+  renderPoolStatus(poolPanel, model);
+
+  // Workflow synopsis panel
+  const statsPanel = container.append("div").attr("class", "wfviz-stats-panel");
+  renderWorkflowStats(statsPanel, model);
+
   // Event log panel
   const eventPanel = container.append("div").attr("class", "wfviz-event-panel");
 
@@ -741,9 +1008,11 @@ function render({ model, el }) {
     const colors = model.get("state_colors") || DEFAULT_COLORS;
     const showFiles = model.get("show_files");
 
-    // Update toolbar and info bar
+    // Update toolbar, info bar, pool panel, and stats panel
     buildToolbar(toolbar, model);
     renderInfoBar(infoBar, model);
+    renderPoolStatus(poolPanel, model);
+    renderWorkflowStats(statsPanel, model);
 
     // If no graph data, show placeholder
     if (!graphData || !graphData.nodes || graphData.nodes.length === 0) {
@@ -799,7 +1068,7 @@ function render({ model, el }) {
     renderDAG(container, g, colors, jobStates, tooltip);
 
     // Render event log
-    renderEventLog(eventPanel, eventLog, colors, expandedJobs);
+    renderEventLog(eventPanel, eventLog, colors, expandedJobs, jobStates);
   }
 
   function fitToView(svg, g, zoom) {
@@ -829,6 +1098,8 @@ function render({ model, el }) {
   model.on("change:status_message", update);
   model.on("change:source_mode", update);
   model.on("change:source_detail", update);
+  model.on("change:pool_status", update);
+  model.on("change:workflow_stats", update);
 }
 
 export default { render };

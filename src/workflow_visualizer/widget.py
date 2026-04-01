@@ -13,7 +13,7 @@ import traitlets
 from .controls import WorkflowControls
 from .events import EventConsumer, RemoteEventConsumer
 from .parser import WorkflowGraph
-from .state import STATE_COLORS
+from .state import STATE_COLORS, fmt_memory_mb, fmt_memory, fmt_bytes, fmt_percent, fmt_duration
 
 _HERE = Path(__file__).parent
 
@@ -450,6 +450,41 @@ def _render_dag_svg(
                     tip_lines.append(f"Transformation: {js['transformation']}")
                 if js.get("exitcode") is not None and js.get("exitcode") != 0:
                     tip_lines.append(f"Exit code: {js['exitcode']}")
+                # Resource requests
+                res_parts = []
+                if js.get("request_cpus"):
+                    res_parts.append(f"{js['request_cpus']} CPU")
+                if js.get("request_memory"):
+                    res_parts.append(f"{js['request_memory']} MB")
+                if js.get("request_gpus") and js["request_gpus"] > 0:
+                    res_parts.append(f"{js['request_gpus']} GPU")
+                if res_parts:
+                    tip_lines.append(f"Requested: {', '.join(res_parts)}")
+                # HTCondor metrics
+                if js.get("wall_time"):
+                    tip_lines.append(f"Wall time: {js['wall_time']}")
+                if js.get("cpu_time"):
+                    tip_lines.append(f"CPU time: {js['cpu_time']}")
+                if js.get("cpu_efficiency_fmt"):
+                    tip_lines.append(f"CPU efficiency: {js['cpu_efficiency_fmt']}")
+                if js.get("memory_efficiency_fmt"):
+                    tip_lines.append(f"Memory efficiency: {js['memory_efficiency_fmt']}")
+                if js.get("image_size_fmt"):
+                    tip_lines.append(f"Peak memory: {js['image_size_fmt']}")
+                if js.get("disk_usage_fmt"):
+                    tip_lines.append(f"Disk usage: {js['disk_usage_fmt']}")
+                if js.get("bytes_recvd_fmt"):
+                    tip_lines.append(f"Bytes in: {js['bytes_recvd_fmt']}")
+                if js.get("bytes_sent_fmt"):
+                    tip_lines.append(f"Bytes out: {js['bytes_sent_fmt']}")
+                if js.get("queue_wait") and js["queue_wait"] != "-":
+                    tip_lines.append(f"Queue wait: {js['queue_wait']}")
+                if js.get("remote_host"):
+                    tip_lines.append(f"Host: {js['remote_host']}")
+                if js.get("num_job_starts") is not None and js["num_job_starts"] > 1:
+                    tip_lines.append(f"Restarts: {js['num_job_starts']}")
+                if js.get("site"):
+                    tip_lines.append(f"Site: {js['site']}")
                 if js.get("hold_reason"):
                     tip_lines.append(f"Hold reason: {js['hold_reason']}")
             # Info from workflow.yml node data
@@ -635,7 +670,11 @@ def _render_header(
     return "\n".join(parts)
 
 
-def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> str:
+def _render_event_table(
+    event_log: List[Dict[str, Any]],
+    max_rows: int = 30,
+    job_states_dict: Optional[Dict[str, Any]] = None,
+) -> str:
     """Render the event log grouped by job, with expandable state history.
 
     Each unique job appears once as a primary row showing its current (latest)
@@ -644,6 +683,9 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
     """
     if not event_log:
         return ""
+
+    if job_states_dict is None:
+        job_states_dict = {}
 
     from collections import OrderedDict
     from datetime import datetime
@@ -733,6 +775,43 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
         if latest.get("hold_reason"):
             meta_items.append(("Hold reason", latest["hold_reason"]))
 
+        # Look up enriched data from job_states for this job
+        job_data = job_states_dict.get(
+            latest.get("node_id") or job_id_raw, {}
+        )
+        if isinstance(job_data, dict):
+            if job_data.get("wall_time"):
+                meta_items.append(("Wall time", job_data["wall_time"]))
+            if job_data.get("cpu_time"):
+                meta_items.append(("CPU time", job_data["cpu_time"]))
+            if job_data.get("cpu_efficiency_fmt"):
+                meta_items.append(("CPU efficiency", job_data["cpu_efficiency_fmt"]))
+            if job_data.get("memory_efficiency_fmt"):
+                meta_items.append(("Memory efficiency", job_data["memory_efficiency_fmt"]))
+            if job_data.get("image_size_fmt"):
+                meta_items.append(("Peak memory", job_data["image_size_fmt"]))
+            if job_data.get("disk_usage_fmt"):
+                meta_items.append(("Disk usage", job_data["disk_usage_fmt"]))
+            if job_data.get("bytes_recvd_fmt"):
+                meta_items.append(("Bytes in", job_data["bytes_recvd_fmt"]))
+            if job_data.get("bytes_sent_fmt"):
+                meta_items.append(("Bytes out", job_data["bytes_sent_fmt"]))
+            if job_data.get("queue_wait") and job_data["queue_wait"] != "-":
+                meta_items.append(("Queue wait", job_data["queue_wait"]))
+            if job_data.get("remote_host"):
+                meta_items.append(("Remote host", job_data["remote_host"]))
+            res_parts = []
+            if job_data.get("request_cpus"):
+                res_parts.append(f"{job_data['request_cpus']} CPU")
+            if job_data.get("request_memory"):
+                res_parts.append(f"{job_data['request_memory']} MB")
+            if job_data.get("request_gpus") and job_data["request_gpus"] > 0:
+                res_parts.append(f"{job_data['request_gpus']} GPU")
+            if res_parts:
+                meta_items.append(("Requested", ", ".join(res_parts)))
+            if job_data.get("num_job_starts") is not None and job_data["num_job_starts"] > 1:
+                meta_items.append(("Restarts", str(job_data["num_job_starts"])))
+
         if meta_items:
             detail_parts.append(
                 '<div style="display:grid;grid-template-columns:100px 1fr;gap:2px 12px;'
@@ -796,6 +875,320 @@ def _render_event_table(event_log: List[Dict[str, Any]], max_rows: int = 30) -> 
     return "\n".join(parts)
 
 
+def _render_pool_status(pool: Dict[str, Any]) -> str:
+    """Render pool resources panel as HTML."""
+    if not pool:
+        return ""
+
+    stat_lbl = 'style="color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:0.5px"'
+    stat_val = 'style="font-weight:600;color:#1e293b;font-size:13px"'
+
+    parts = [
+        '<div style="font-family:system-ui,sans-serif;padding:10px 12px;'
+        'border:1px solid #e2e8f0;border-radius:8px;margin-top:8px;background:#fff">',
+        '<div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:8px">'
+        'Pool Resources</div>',
+        '<div style="display:flex;gap:24px;flex-wrap:wrap">',
+    ]
+
+    # Machines
+    if pool.get("machines") is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Machines</div>'
+            f'<div {stat_val}>{pool["machines"]}</div></div>'
+        )
+
+    # Slots
+    total_slots = pool.get("total_slots", 0)
+    claimed = pool.get("claimed_slots", 0)
+    idle = pool.get("idle_slots", 0)
+    if total_slots:
+        parts.append(
+            f'<div><div {stat_lbl}>Slots</div>'
+            f'<div {stat_val}>{claimed}/{total_slots} '
+            f'<span style="color:#64748b;font-weight:400;font-size:11px">claimed</span>'
+            f'</div></div>'
+        )
+
+    # CPUs
+    total_cpus = pool.get("total_cpus", 0)
+    idle_cpus = pool.get("idle_cpus", 0)
+    if total_cpus:
+        parts.append(
+            f'<div><div {stat_lbl}>CPUs</div>'
+            f'<div {stat_val}>{idle_cpus}/{total_cpus} '
+            f'<span style="color:#64748b;font-weight:400;font-size:11px">idle</span>'
+            f'</div></div>'
+        )
+
+    # Memory
+    total_mem = pool.get("total_memory_mb")
+    idle_mem = pool.get("idle_memory_mb")
+    if total_mem is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Memory</div>'
+            f'<div {stat_val}>{fmt_memory_mb(idle_mem)} / {fmt_memory_mb(total_mem)} '
+            f'<span style="color:#64748b;font-weight:400;font-size:11px">idle</span>'
+            f'</div></div>'
+        )
+
+    # GPUs
+    total_gpus = pool.get("total_gpus", 0)
+    idle_gpus = pool.get("idle_gpus", 0)
+    if total_gpus and total_gpus > 0:
+        parts.append(
+            f'<div><div {stat_lbl}>GPUs</div>'
+            f'<div {stat_val}>{idle_gpus}/{total_gpus} '
+            f'<span style="color:#64748b;font-weight:400;font-size:11px">idle</span>'
+            f'</div></div>'
+        )
+
+    # Load average
+    if pool.get("load_avg") is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Load Avg</div>'
+            f'<div {stat_val}>{pool["load_avg"]:.1f}</div></div>'
+        )
+
+    # OS/Arch
+    if pool.get("os_arch"):
+        parts.append(
+            f'<div><div {stat_lbl}>Platform</div>'
+            f'<div style="font-size:11px;color:#475569">{html.escape(pool["os_arch"])}</div></div>'
+        )
+
+    parts.append('</div></div>')
+    return "\n".join(parts)
+
+
+def _render_workflow_stats(stats: Dict[str, Any]) -> str:
+    """Render workflow synopsis panel as HTML."""
+    if not stats:
+        return ""
+
+    sect_lbl = (
+        'style="font-size:11px;font-weight:700;color:#475569;'
+        'text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;'
+        'border-bottom:1px solid #e2e8f0;padding-bottom:4px"'
+    )
+    stat_lbl = (
+        'style="color:#94a3b8;font-size:10px;text-transform:uppercase;'
+        'letter-spacing:0.5px"'
+    )
+    stat_val = 'style="font-weight:600;color:#1e293b;font-size:13px"'
+
+    parts = [
+        '<div style="font-family:system-ui,sans-serif;padding:12px;'
+        'border:1px solid #e2e8f0;border-radius:8px;margin-top:8px;background:#fff">',
+        '<div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:10px">'
+        'Workflow Synopsis</div>',
+    ]
+
+    # ── Job Summary row ──
+    parts.append(f'<div {sect_lbl}>Jobs</div>')
+    parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+
+    total = stats.get("total_jobs")
+    compute = stats.get("compute_jobs")
+    infra = stats.get("infra_jobs")
+    succeeded = stats.get("succeeded")
+    failed = stats.get("failed")
+    held = stats.get("held")
+
+    if total is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Total</div>'
+            f'<div {stat_val}>{total}</div></div>'
+        )
+    if compute is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Compute</div>'
+            f'<div {stat_val}>{compute}</div></div>'
+        )
+    if infra is not None:
+        parts.append(
+            f'<div><div {stat_lbl}>Infra</div>'
+            f'<div {stat_val}>{infra}</div></div>'
+        )
+    if succeeded is not None:
+        color = "#16a34a" if succeeded == total else "#1e293b"
+        parts.append(
+            f'<div><div {stat_lbl}>Succeeded</div>'
+            f'<div style="font-weight:600;color:{color};font-size:13px">{succeeded}</div></div>'
+        )
+    if failed is not None:
+        color = "#dc2626" if failed > 0 else "#1e293b"
+        parts.append(
+            f'<div><div {stat_lbl}>Failed</div>'
+            f'<div style="font-weight:600;color:{color};font-size:13px">{failed}</div></div>'
+        )
+    if held is not None and held > 0:
+        parts.append(
+            f'<div><div {stat_lbl}>Held</div>'
+            f'<div style="font-weight:600;color:#9333ea;font-size:13px">{held}</div></div>'
+        )
+    parts.append('</div>')
+
+    # ── Timing row ──
+    wall_time = stats.get("wall_time")
+    total_compute = stats.get("total_compute_time")
+    parallelism = stats.get("parallelism")
+    if wall_time is not None or total_compute is not None:
+        parts.append(f'<div {sect_lbl}>Timing</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+        if wall_time is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Wall Time</div>'
+                f'<div {stat_val}>{fmt_duration(wall_time)}</div></div>'
+            )
+        if total_compute is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Total Compute</div>'
+                f'<div {stat_val}>{fmt_duration(total_compute)}</div></div>'
+            )
+        if parallelism is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Parallelism</div>'
+                f'<div {stat_val}>{parallelism:.2f}x</div></div>'
+            )
+        parts.append('</div>')
+
+    # ── Duration distribution row ──
+    dur_min = stats.get("dur_min")
+    dur_max = stats.get("dur_max")
+    dur_mean = stats.get("dur_mean")
+    dur_median = stats.get("dur_median")
+    longest = stats.get("longest_job_name")
+    shortest = stats.get("shortest_job_name")
+    if dur_min is not None:
+        parts.append(f'<div {sect_lbl}>Job Duration</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+        parts.append(
+            f'<div><div {stat_lbl}>Min</div>'
+            f'<div {stat_val}>{fmt_duration(dur_min)}</div></div>'
+        )
+        if dur_max is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Max</div>'
+                f'<div {stat_val}>{fmt_duration(dur_max)}</div></div>'
+            )
+        if dur_mean is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Mean</div>'
+                f'<div {stat_val}>{fmt_duration(dur_mean)}</div></div>'
+            )
+        if dur_median is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Median</div>'
+                f'<div {stat_val}>{fmt_duration(dur_median)}</div></div>'
+            )
+        if longest:
+            parts.append(
+                f'<div><div {stat_lbl}>Longest</div>'
+                f'<div style="font-size:12px;color:#475569">{html.escape(longest)}</div></div>'
+            )
+        if shortest:
+            parts.append(
+                f'<div><div {stat_lbl}>Shortest</div>'
+                f'<div style="font-size:12px;color:#475569">{html.escape(shortest)}</div></div>'
+            )
+        parts.append('</div>')
+
+    # ── Memory row ──
+    peak_kb = stats.get("peak_maxrss_kb")
+    peak_job = stats.get("peak_maxrss_job")
+    mean_kb = stats.get("mean_maxrss_kb")
+    if peak_kb is not None:
+        parts.append(f'<div {sect_lbl}>Memory</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+        parts.append(
+            f'<div><div {stat_lbl}>Peak RSS</div>'
+            f'<div {stat_val}>{fmt_memory(peak_kb)}</div></div>'
+        )
+        if peak_job:
+            parts.append(
+                f'<div><div {stat_lbl}>Peak Job</div>'
+                f'<div style="font-size:12px;color:#475569">{html.escape(peak_job)}</div></div>'
+            )
+        if mean_kb is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Mean RSS</div>'
+                f'<div {stat_val}>{fmt_memory(int(mean_kb))}</div></div>'
+            )
+        parts.append('</div>')
+
+    # ── Efficiency row ──
+    cpu_mean = stats.get("cpu_eff_mean")
+    mem_mean = stats.get("mem_eff_mean")
+    cpu_min = stats.get("cpu_eff_min")
+    cpu_max = stats.get("cpu_eff_max")
+    if cpu_mean is not None or mem_mean is not None:
+        parts.append(f'<div {sect_lbl}>Efficiency</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">')
+        if cpu_mean is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>CPU Eff (mean)</div>'
+                f'<div {stat_val}>{fmt_percent(cpu_mean)}</div></div>'
+            )
+        if cpu_min is not None and cpu_max is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>CPU Eff (range)</div>'
+                f'<div {stat_val}>{fmt_percent(cpu_min)} – {fmt_percent(cpu_max)}</div></div>'
+            )
+        if mem_mean is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Mem Eff (mean)</div>'
+                f'<div {stat_val}>{fmt_percent(mem_mean)}</div></div>'
+            )
+        parts.append('</div>')
+
+    # ── Resources row ──
+    cpu_seconds = stats.get("cpu_seconds")
+    transfer = stats.get("transfer_bytes")
+    hosts = stats.get("hosts")
+    pool_machines = stats.get("pool_machines")
+    pool_cpus = stats.get("pool_total_cpus")
+    pool_gpus = stats.get("pool_total_gpus")
+    if cpu_seconds is not None or hosts:
+        parts.append(f'<div {sect_lbl}>Resources</div>')
+        parts.append('<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:4px">')
+        if cpu_seconds is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>CPU Seconds</div>'
+                f'<div {stat_val}>{fmt_duration(cpu_seconds)}</div></div>'
+            )
+        if transfer is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Data Transfer</div>'
+                f'<div {stat_val}>{fmt_bytes(transfer)}</div></div>'
+            )
+        if pool_machines is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Pool Machines</div>'
+                f'<div {stat_val}>{pool_machines}</div></div>'
+            )
+        if pool_cpus is not None:
+            parts.append(
+                f'<div><div {stat_lbl}>Pool CPUs</div>'
+                f'<div {stat_val}>{pool_cpus}</div></div>'
+            )
+        if pool_gpus is not None and pool_gpus > 0:
+            parts.append(
+                f'<div><div {stat_lbl}>Pool GPUs</div>'
+                f'<div {stat_val}>{pool_gpus}</div></div>'
+            )
+        if hosts:
+            host_str = ", ".join(html.escape(h) for h in hosts)
+            parts.append(
+                f'<div><div {stat_lbl}>Hosts</div>'
+                f'<div style="font-size:12px;color:#475569">{host_str}</div></div>'
+            )
+        parts.append('</div>')
+
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
 class WorkflowVisualizerWidget(anywidget.AnyWidget):
     """Interactive DAG visualization of a Pegasus workflow.
 
@@ -830,6 +1223,8 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
     state_colors = traitlets.Dict(STATE_COLORS).tag(sync=True)
     show_files = traitlets.Bool(False).tag(sync=True)
     workflow_info = traitlets.Dict({}).tag(sync=True)
+    pool_status = traitlets.Dict({}).tag(sync=True)
+    workflow_stats = traitlets.Dict({}).tag(sync=True)
     status_message = traitlets.Unicode("").tag(sync=True)
     source_mode = traitlets.Unicode("STATIC").tag(sync=True)
     source_detail = traitlets.Unicode("").tag(sync=True)
@@ -967,6 +1362,8 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         self.job_states = self._consumer.job_states
         self.event_log = self._consumer.event_log[:100]  # cap at 100 entries
         self.workflow_state = self._consumer.workflow_state
+        self.pool_status = self._consumer.pool_status
+        self.workflow_stats = self._consumer.workflow_stats
 
         # Merge consumer workflow_info into existing info (preserves parser-seeded fields)
         consumer_info = self._consumer.workflow_info
@@ -1045,17 +1442,24 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         no JavaScript required, so it survives classic Notebook's HTML sanitizer.
         """
         try:
-            bundle = super()._repr_mimebundle_(**kwargs)
+            result = super()._repr_mimebundle_(**kwargs)
+            # anywidget may return (data, metadata) tuple or a plain dict
+            if isinstance(result, tuple):
+                bundle = result[0]
+            else:
+                bundle = result
             if bundle and "application/vnd.jupyter.widget-view+json" in bundle:
-                return bundle
+                return result
         except Exception:
             pass
         # Ensure events are loaded for the HTML fallback
         self._poll_once()
         header = self._render_header_html()
         svg = self._repr_html_()
-        event_table = _render_event_table(list(self.event_log))
-        return {"text/html": f"{header}{svg}{event_table}"}
+        pool_html = _render_pool_status(dict(self.pool_status))
+        stats_html = _render_workflow_stats(dict(self.workflow_stats))
+        event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
+        return {"text/html": f"{header}{svg}{pool_html}{stats_html}{event_table}"}
 
     def _render_header_html(self) -> str:
         """Render the workflow info header bar."""
@@ -1114,13 +1518,15 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
                 clear_output(wait=True)
                 header = self._render_header_html()
                 svg = self._repr_html_()
-                event_table = _render_event_table(list(self.event_log))
+                pool_html = _render_pool_status(dict(self.pool_status))
+                stats_html = _render_workflow_stats(dict(self.workflow_stats))
+                event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
                 refresh_note = (
                     f'<div style="font-family:system-ui,sans-serif;font-size:11px;'
                     f'color:#94a3b8;text-align:right;padding:2px 4px">'
                     f'Refreshing every {refresh}s &mdash; Ctrl-C to stop</div>'
                 )
-                display(HTML(f"{header}{svg}{event_table}{refresh_note}"))
+                display(HTML(f"{header}{svg}{pool_html}{stats_html}{event_table}{refresh_note}"))
 
                 # Stop if workflow reached a terminal state
                 if self.workflow_state in ("SUCCESS", "FAILED", "UNKNOWN") and self._consumer and not self._polling:
@@ -1154,8 +1560,10 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             self.show_files = show_files
         header = self._render_header_html()
         svg = self._repr_html_()
-        event_table = _render_event_table(list(self.event_log))
-        display(HTML(f"{header}{svg}{event_table}"))
+        pool_html = _render_pool_status(dict(self.pool_status))
+        stats_html = _render_workflow_stats(dict(self.workflow_stats))
+        event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
+        display(HTML(f"{header}{svg}{pool_html}{stats_html}{event_table}"))
 
     def summary(self) -> None:
         """Print a text summary of the workflow graph."""
