@@ -1210,6 +1210,12 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         Path to SSH identity file for remote mode.
     show_files : bool
         Whether to show data file nodes in the DAG (default: False).
+    renderer : str
+        Rendering backend: ``"auto"`` (default) tries the interactive
+        anywidget frontend and falls back to SVG; ``"svg"`` forces
+        pure server-side SVG rendering (no JavaScript required).
+        Use ``"svg"`` on environments where the anywidget JS extension
+        is unavailable (e.g. ACCESS Open OnDemand).
     """
 
     _esm = _HERE / "static" / "widget.js"
@@ -1239,10 +1245,14 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         ssh_config: Optional[str] = None,
         ssh_identity: Optional[str] = None,
         show_files: bool = False,
+        renderer: str = "auto",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
 
+        if renderer not in ("auto", "svg"):
+            raise ValueError(f"renderer must be 'auto' or 'svg', got {renderer!r}")
+        self._renderer = renderer
         self._poll_interval = poll_interval
         self._polling = False
         self._poll_thread: Optional[threading.Thread] = None
@@ -1440,18 +1450,22 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         is unavailable (e.g. classic Notebook on ACCESS Open OnDemand), falls
         back to a pure SVG rendering computed entirely server-side in Python —
         no JavaScript required, so it survives classic Notebook's HTML sanitizer.
+
+        When ``renderer="svg"`` was set at construction time, the anywidget
+        path is skipped entirely to avoid browser-side RequireJS errors.
         """
-        try:
-            result = super()._repr_mimebundle_(**kwargs)
-            # anywidget may return (data, metadata) tuple or a plain dict
-            if isinstance(result, tuple):
-                bundle = result[0]
-            else:
-                bundle = result
-            if bundle and "application/vnd.jupyter.widget-view+json" in bundle:
-                return result
-        except Exception:
-            pass
+        if self._renderer != "svg":
+            try:
+                result = super()._repr_mimebundle_(**kwargs)
+                # anywidget may return (data, metadata) tuple or a plain dict
+                if isinstance(result, tuple):
+                    bundle = result[0]
+                else:
+                    bundle = result
+                if bundle and "application/vnd.jupyter.widget-view+json" in bundle:
+                    return result
+            except Exception:
+                pass
         # Ensure events are loaded for the HTML fallback
         self._poll_once()
         header = self._render_header_html()

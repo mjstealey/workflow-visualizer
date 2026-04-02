@@ -3,7 +3,7 @@
 
 # Default: list available recipes
 default:
-    @just --list
+    just --list
 
 # Launch JupyterLab rooted at the project directory
 lab:
