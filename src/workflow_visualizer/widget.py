@@ -1253,6 +1253,16 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         if renderer not in ("auto", "svg"):
             raise ValueError(f"renderer must be 'auto' or 'svg', got {renderer!r}")
         self._renderer = renderer
+
+        # In SVG mode, close the comm channel so the browser never tries to
+        # load the anywidget JavaScript module (which may not be installed on
+        # shared JupyterHub deployments like ACCESS Open OnDemand).
+        if renderer == "svg":
+            try:
+                self.close()
+            except Exception:
+                pass
+
         self._poll_interval = poll_interval
         self._polling = False
         self._poll_thread: Optional[threading.Thread] = None
