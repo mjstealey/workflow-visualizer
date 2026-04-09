@@ -1189,6 +1189,119 @@ def _render_workflow_stats(stats: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _render_diagnostics(diag: Dict[str, Any]) -> str:
+    """Render the diagnostics panel (stalls, holds, failures, idle reasons)."""
+    if not diag:
+        return ""
+    holds = diag.get("holds") or []
+    failures = diag.get("failures") or []
+    idle = diag.get("idle")
+    stall_state = diag.get("stall_state", "ok")
+    available = diag.get("available")
+    active = diag.get("active")
+    if not (available or active or holds or failures or idle or stall_state == "stalled"):
+        return ""
+
+    badge_color = {
+        "ok": "#16a34a",
+        "suspect": "#d97706",
+        "stalled": "#dc2626",
+    }.get(stall_state, "#64748b")
+    badge_label = {
+        "ok": "Healthy",
+        "suspect": "Suspect",
+        "stalled": "STALLED",
+    }.get(stall_state, stall_state.upper())
+
+    parts = [
+        '<div style="font-family:system-ui,sans-serif;padding:12px;'
+        'border:1px solid #e2e8f0;border-radius:8px;margin-top:8px;background:#fff">',
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">',
+        '<div style="font-size:12px;font-weight:700;color:#1e293b">Diagnostics</div>',
+        f'<span style="display:inline-block;padding:2px 8px;border-radius:10px;'
+        f'font-size:10px;font-weight:700;color:#fff;background:{badge_color}">'
+        f'{html.escape(badge_label)}</span>',
+    ]
+    if active:
+        parts.append(
+            '<span style="font-size:10px;color:#64748b">monitor --diagnose engine active</span>'
+        )
+    parts.append('</div>')
+
+    reason = diag.get("stall_reason")
+    if stall_state == "stalled" and reason:
+        parts.append(
+            f'<div style="font-size:11px;color:#991b1b;margin-bottom:8px">'
+            f'<b>Stall reason:</b> {html.escape(str(reason))}</div>'
+        )
+
+    if idle:
+        parts.append(
+            '<div style="font-size:11px;font-weight:700;color:#475569;'
+            'text-transform:uppercase;margin:6px 0 4px">Idle Diagnosis</div>'
+        )
+        ic = idle.get("idle_job_count")
+        pic = idle.get("pool_idle_cpus")
+        ptc = idle.get("pool_total_cpus")
+        head = []
+        if ic is not None:
+            head.append(f"{ic} idle jobs")
+        if ptc is not None:
+            head.append(f"pool: {pic}/{ptc} CPUs idle")
+        if head:
+            parts.append(
+                f'<div style="font-size:11px;color:#475569;margin-bottom:4px">'
+                f'{html.escape(" — ".join(head))}</div>'
+            )
+        for f in (idle.get("findings") or [])[:6]:
+            parts.append(
+                f'<div style="font-size:11px;color:#1e293b">• {html.escape(str(f))}</div>'
+            )
+        for s in (idle.get("suggestions") or [])[:6]:
+            parts.append(
+                f'<div style="font-size:11px;color:#0369a1">→ {html.escape(str(s))}</div>'
+            )
+
+    def _entry_html(label: str, color: str, items: List[Dict[str, Any]]) -> List[str]:
+        if not items:
+            return []
+        out = [
+            f'<div style="font-size:11px;font-weight:700;color:{color};'
+            f'text-transform:uppercase;margin:8px 0 4px">{label} ({len(items)})</div>'
+        ]
+        for it in items[-5:]:
+            jname = html.escape(str(it.get("job_name") or ""))
+            summary = html.escape(str(it.get("summary") or ""))
+            out.append(
+                f'<details style="font-size:11px;color:#1e293b;margin-bottom:2px">'
+                f'<summary><b>{jname}</b> — {summary}</summary>'
+            )
+            reason_t = it.get("reason")
+            if reason_t:
+                out.append(
+                    f'<div style="margin:4px 0 0 12px;color:#475569">'
+                    f'{html.escape(str(reason_t))}</div>'
+                )
+            for s in (it.get("suggestions") or [])[:5]:
+                out.append(
+                    f'<div style="margin:2px 0 0 12px;color:#0369a1">→ {html.escape(str(s))}</div>'
+                )
+            out.append('</details>')
+        return out
+
+    parts.extend(_entry_html("Held Jobs", "#9333ea", holds))
+    parts.extend(_entry_html("Failed Jobs", "#dc2626", failures))
+
+    if not (idle or holds or failures or stall_state == "stalled"):
+        parts.append(
+            '<div style="font-size:11px;color:#64748b">'
+            'No issues detected. Engine is monitoring.</div>'
+        )
+
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
 class WorkflowVisualizerWidget(anywidget.AnyWidget):
     """Interactive DAG visualization of a Pegasus workflow.
 
@@ -1231,6 +1344,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
     workflow_info = traitlets.Dict({}).tag(sync=True)
     pool_status = traitlets.Dict({}).tag(sync=True)
     workflow_stats = traitlets.Dict({}).tag(sync=True)
+    diagnostics = traitlets.Dict({}).tag(sync=True)
     status_message = traitlets.Unicode("").tag(sync=True)
     source_mode = traitlets.Unicode("STATIC").tag(sync=True)
     source_detail = traitlets.Unicode("").tag(sync=True)
@@ -1384,6 +1498,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         self.workflow_state = self._consumer.workflow_state
         self.pool_status = self._consumer.pool_status
         self.workflow_stats = self._consumer.workflow_stats
+        self.diagnostics = self._consumer.diagnostics
 
         # Merge consumer workflow_info into existing info (preserves parser-seeded fields)
         consumer_info = self._consumer.workflow_info
@@ -1483,7 +1598,8 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         pool_html = _render_pool_status(dict(self.pool_status))
         stats_html = _render_workflow_stats(dict(self.workflow_stats))
         event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
-        return {"text/html": f"{header}{svg}{pool_html}{stats_html}{event_table}"}
+        diag_html = _render_diagnostics(dict(self.diagnostics))
+        return {"text/html": f"{header}{svg}{pool_html}{diag_html}{stats_html}{event_table}"}
 
     def _render_header_html(self) -> str:
         """Render the workflow info header bar."""
@@ -1545,12 +1661,13 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
                 pool_html = _render_pool_status(dict(self.pool_status))
                 stats_html = _render_workflow_stats(dict(self.workflow_stats))
                 event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
+                diag_html = _render_diagnostics(dict(self.diagnostics))
                 refresh_note = (
                     f'<div style="font-family:system-ui,sans-serif;font-size:11px;'
                     f'color:#94a3b8;text-align:right;padding:2px 4px">'
                     f'Refreshing every {refresh}s &mdash; Ctrl-C to stop</div>'
                 )
-                display(HTML(f"{header}{svg}{pool_html}{stats_html}{event_table}{refresh_note}"))
+                display(HTML(f"{header}{svg}{pool_html}{diag_html}{stats_html}{event_table}{refresh_note}"))
 
                 # Stop if workflow reached a terminal state
                 if self.workflow_state in ("SUCCESS", "FAILED", "UNKNOWN") and self._consumer and not self._polling:
@@ -1587,7 +1704,8 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         pool_html = _render_pool_status(dict(self.pool_status))
         stats_html = _render_workflow_stats(dict(self.workflow_stats))
         event_table = _render_event_table(list(self.event_log), job_states_dict=dict(self.job_states))
-        display(HTML(f"{header}{svg}{pool_html}{stats_html}{event_table}"))
+        diag_html = _render_diagnostics(dict(self.diagnostics))
+        display(HTML(f"{header}{svg}{pool_html}{diag_html}{stats_html}{event_table}"))
 
     def summary(self) -> None:
         """Print a text summary of the workflow graph."""

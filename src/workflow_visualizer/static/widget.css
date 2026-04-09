@@ -876,3 +876,31 @@ marker#wfviz-arrowhead path {
 .wfviz-toggle input {
     cursor: pointer;
 }
+
+/* ── Diagnostics Panel ─────────────────────────────────────────────── */
+
+.wfviz-diag-panel {
+    padding: 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    margin-top: 8px;
+    background: #fff;
+    font-family: system-ui, sans-serif;
+}
+.wfviz-diag-header { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.wfviz-diag-title { font-size:12px; font-weight:700; color:#1e293b; }
+.wfviz-diag-badge {
+    display:inline-block; padding:2px 8px; border-radius:10px;
+    font-size:10px; font-weight:700; color:#fff;
+}
+.wfviz-diag-sub { font-size:10px; color:#64748b; }
+.wfviz-diag-section {
+    font-size:11px; font-weight:700; color:#475569;
+    text-transform:uppercase; letter-spacing:0.5px; margin:8px 0 4px;
+}
+.wfviz-diag-line { font-size:11px; color:#1e293b; line-height:1.45; }
+.wfviz-diag-suggest { color:#0369a1; }
+.wfviz-diag-stall { font-size:11px; color:#991b1b; margin-bottom:8px; }
+.wfviz-diag-entry { font-size:11px; margin-bottom:2px; }
+.wfviz-diag-entry summary { cursor:pointer; }
+.wfviz-diag-reason { margin:4px 0 0 12px; color:#475569; }

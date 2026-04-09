@@ -940,6 +940,80 @@ function renderPoolStatus(panel, model) {
   }
 }
 
+// ── Diagnostics Panel ──────────────────────────────────────────────────────
+
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function renderDiagnostics(panel, model) {
+  const diag = model.get("diagnostics") || {};
+  const holds = diag.holds || [];
+  const failures = diag.failures || [];
+  const idle = diag.idle;
+  const stallState = diag.stall_state || "ok";
+  const has = diag.available || diag.active || holds.length || failures.length || idle || stallState === "stalled";
+  panel.style("display", has ? "block" : "none");
+  if (!has) return;
+
+  const badgeColor = stallState === "stalled" ? "#dc2626"
+    : stallState === "suspect" ? "#d97706" : "#16a34a";
+  const badgeLabel = stallState === "stalled" ? "STALLED"
+    : stallState === "suspect" ? "Suspect" : "Healthy";
+
+  let html = '<div class="wfviz-diag-header">'
+    + '<span class="wfviz-diag-title">Diagnostics</span>'
+    + `<span class="wfviz-diag-badge" style="background:${badgeColor}">${badgeLabel}</span>`;
+  if (diag.active) {
+    html += '<span class="wfviz-diag-sub">monitor --diagnose engine active</span>';
+  }
+  html += '</div>';
+
+  if (stallState === "stalled" && diag.stall_reason) {
+    html += `<div class="wfviz-diag-stall"><b>Stall reason:</b> ${escapeHtml(diag.stall_reason)}</div>`;
+  }
+
+  if (idle) {
+    html += '<div class="wfviz-diag-section">Idle Diagnosis</div>';
+    const headBits = [];
+    if (idle.idle_job_count != null) headBits.push(`${idle.idle_job_count} idle jobs`);
+    if (idle.pool_total_cpus != null) headBits.push(`pool: ${idle.pool_idle_cpus}/${idle.pool_total_cpus} CPUs idle`);
+    if (headBits.length) html += `<div class="wfviz-diag-line">${escapeHtml(headBits.join(" — "))}</div>`;
+    (idle.findings || []).slice(0, 6).forEach(f => {
+      html += `<div class="wfviz-diag-line">• ${escapeHtml(f)}</div>`;
+    });
+    (idle.suggestions || []).slice(0, 6).forEach(s => {
+      html += `<div class="wfviz-diag-line wfviz-diag-suggest">→ ${escapeHtml(s)}</div>`;
+    });
+  }
+
+  function entries(label, color, items) {
+    if (!items || !items.length) return "";
+    let h = `<div class="wfviz-diag-section" style="color:${color}">${label} (${items.length})</div>`;
+    items.slice(-5).forEach(it => {
+      h += '<details class="wfviz-diag-entry"><summary>'
+        + `<b>${escapeHtml(it.job_name || "")}</b> — ${escapeHtml(it.summary || "")}</summary>`;
+      if (it.reason) h += `<div class="wfviz-diag-reason">${escapeHtml(it.reason)}</div>`;
+      (it.suggestions || []).slice(0, 5).forEach(s => {
+        h += `<div class="wfviz-diag-line wfviz-diag-suggest">→ ${escapeHtml(s)}</div>`;
+      });
+      h += '</details>';
+    });
+    return h;
+  }
+  html += entries("Held Jobs", "#9333ea", holds);
+  html += entries("Failed Jobs", "#dc2626", failures);
+
+  if (!idle && !holds.length && !failures.length && stallState !== "stalled") {
+    html += '<div class="wfviz-diag-line" style="color:#64748b">No issues detected. Engine is monitoring.</div>';
+  }
+
+  panel.html(html);
+}
+
 // ── Placeholder (no workflow loaded) ────────────────────────────────────────
 
 function showPlaceholder(viewport, model) {
@@ -987,6 +1061,10 @@ function render({ model, el }) {
   const poolPanel = container.append("div").attr("class", "wfviz-pool-panel");
   renderPoolStatus(poolPanel, model);
 
+  // Diagnostics panel (workflow-monitor --diagnose sidecar)
+  const diagPanel = container.append("div").attr("class", "wfviz-diag-panel");
+  renderDiagnostics(diagPanel, model);
+
   // Workflow synopsis panel
   const statsPanel = container.append("div").attr("class", "wfviz-stats-panel");
   renderWorkflowStats(statsPanel, model);
@@ -1012,6 +1090,7 @@ function render({ model, el }) {
     buildToolbar(toolbar, model);
     renderInfoBar(infoBar, model);
     renderPoolStatus(poolPanel, model);
+    renderDiagnostics(diagPanel, model);
     renderWorkflowStats(statsPanel, model);
 
     // If no graph data, show placeholder
@@ -1100,6 +1179,7 @@ function render({ model, el }) {
   model.on("change:source_detail", update);
   model.on("change:pool_status", update);
   model.on("change:workflow_stats", update);
+  model.on("change:diagnostics", update);
 }
 
 export default { render };

@@ -24,6 +24,7 @@ The mode is set automatically based on the parameters provided at initialization
 - **File state inference** — data file nodes are colored by their inferred state (pending, staging, available, in use, failed)
 - **Workflow header** — displays workflow name, state, job progress (N/M done), elapsed time, and Pegasus version
 - **Pool resources panel** — live HTCondor pool status: machines, slots (claimed/idle), CPUs, memory, GPUs, load average, and platform
+- **Diagnostics panel** — surfaces stall detection, idle-job analysis, and per-job hold/failure remediation suggestions emitted by `workflow-monitor --diagnose` to the `diagnostics-events.jsonl` sidecar
 - **HTCondor job metrics** — resource requests (CPUs, memory, disk, GPUs), queue wait time, restart count, transfer I/O, and accounting group per job
 - **Post-completion metrics** — CPU time (user/sys), wall clock time, peak memory, disk usage, transfer bytes, and remote host from `condor_history`
 - **Derived efficiency metrics** — CPU efficiency (CPU time / wall time) and memory efficiency (peak usage / requested) per job
@@ -364,6 +365,32 @@ These metrics appear in:
 - **Node tooltips** (hover over a job node in the DAG)
 - **Event log detail rows** (click to expand a job in the event log)
 
+### Diagnostics Panel
+
+When the workflow-monitor is launched with the `--diagnose` flag it writes an
+additional `diagnostics-events.jsonl` sidecar next to the main event log. The
+visualizer auto-detects this file (sibling of `jsonl_path` locally, or fetched
+from the same remote directory in SSH mode) and renders a **Diagnostics**
+panel containing:
+
+| Section | Source events | Description |
+|---|---|---|
+| Health badge | `stall_detected` / `stall_resolved` | `Healthy` / `Suspect` / `STALLED` indicator with stall reason |
+| Idle Diagnosis | `idle_diagnosis` | Findings, suggestions, and pool capacity context for stalled idle queues |
+| Held Jobs | `hold_diagnosis` | Per-job summary, raw HoldReason, and remediation suggestions |
+| Failed Jobs | `failure_diagnosis` | Per-job failure summary, reason, and remediation suggestions |
+
+The panel renders identically in both the D3/anywidget mode and the pure-SVG
+fallback. To enable diagnostics, start the monitor with `--diagnose`:
+
+```bash
+ssh pegasus-submit "uv run workflow-monitor --serve --diagnose /home/ubuntu/my-workflow"
+```
+
+Per-job hold/failure diagnoses are also attached to the corresponding entries
+in `job_states` (under `diagnosis`) and surfaced in tooltips and event-log
+detail rows.
+
 ### Polling and Cleanup
 
 Polling starts automatically when a JSONL source is provided and stops when a `workflow_end` event is received. To manually control polling:
@@ -405,6 +432,15 @@ Event types consumed:
   pool_status      → pool resources (Tier 4)
   workflow_end     → final summary
 
+Diagnostics sidecar (workflow-monitor --diagnose):
+  diagnostics-events.jsonl
+    diag_start / diag_end          → engine lifecycle
+    stall_detected / stall_resolved → workflow stall state
+    idle_diagnosis                 → idle-job analysis (findings/suggestions)
+    hold_diagnosis                 → per-job hold remediation
+    failure_diagnosis              → per-job failure remediation
+    diag_error                     → engine error report
+
 SVG Fallback Path (classic Notebook / ACCESS):
   widget.py → _render_dag_svg()      → pure SVG (Python-side layout)
             → _render_header()       → workflow info bar (HTML)
@@ -418,7 +454,7 @@ SVG Fallback Path (classic Notebook / ACCESS):
 |---|---|
 | `parser.py` | Parses `workflow.yml` into a graph of nodes and edges |
 | `state.py` | Maps Pegasus job states to display categories, UML colors, and formatting helpers |
-| `events.py` | Consumes JSONL event logs (local or SSH) with incremental polling; handles `htcondor_poll`, `htcondor_history`, `pool_status` events |
+| `events.py` | Consumes JSONL event logs (local or SSH) with incremental polling; handles `htcondor_poll`, `htcondor_history`, `pool_status`, `workflow_stats`, and the `diagnostics-events.jsonl` sidecar |
 | `controls.py` | Subprocess wrappers for Pegasus and workflow-monitor CLI commands |
 | `widget.py` | AnyWidget integration with pure SVG fallback for classic Notebook |
 

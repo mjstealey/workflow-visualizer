@@ -21,9 +21,34 @@ class EventConsumer:
     and event log suitable for syncing to widget traitlets.
     """
 
-    def __init__(self, jsonl_path: str | Path) -> None:
+    def __init__(
+        self,
+        jsonl_path: str | Path,
+        diag_path: Optional[str | Path] = None,
+    ) -> None:
         self._path = Path(jsonl_path)
         self._processed_lines: int = 0
+
+        # Diagnostics sidecar (workflow-monitor --diagnose) — defaults to
+        # `diagnostics-events.jsonl` next to the main event log.
+        self._diag_path = Path(diag_path) if diag_path else (
+            self._path.parent / "diagnostics-events.jsonl"
+        )
+        self._diag_processed_lines: int = 0
+        self._diagnostics: Dict[str, Any] = {
+            "active": False,
+            "schema_version": None,
+            "engine_config": {},
+            "stall_state": "ok",   # ok | suspect | stalled
+            "stall_since": None,
+            "stall_reason": None,
+            "idle": None,
+            "holds": [],
+            "failures": [],
+            "errors": [],
+        }
+        # exec_job_id -> latest hold/failure diagnosis
+        self._job_diagnostics: Dict[str, Dict[str, Any]] = {}
 
         # Accumulated state
         self._job_state: Dict[int, Dict[str, Any]] = {}
@@ -110,13 +135,120 @@ class EventConsumer:
         except OSError:
             return False
 
-        if not new_events:
-            return False
-
         for ev in new_events:
             self._apply_event(ev)
 
+        # Always poll the diagnostics sidecar — it can advance independently
+        # of the main event log.
+        diag_changed = self._poll_diagnostics()
+
+        return bool(new_events) or diag_changed
+
+    def poll_diagnostics(self) -> bool:
+        """Public alias for one-shot diagnostics polling."""
+        return self._poll_diagnostics()
+
+    def _poll_diagnostics(self) -> bool:
+        """Read new lines from the diagnostics sidecar JSONL.
+
+        Returns True if any new diagnostic events were applied.
+        """
+        if not self._diag_path.exists():
+            return False
+        new_events: List[Dict[str, Any]] = []
+        try:
+            with open(self._diag_path) as fh:
+                total_lines = 0
+                for i, line in enumerate(fh):
+                    total_lines = i + 1
+                    if i < self._diag_processed_lines:
+                        continue
+                    line = line.strip()
+                    if line:
+                        try:
+                            new_events.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+                self._diag_processed_lines = total_lines
+        except OSError:
+            return False
+        if not new_events:
+            return False
+        for ev in new_events:
+            self._apply_diag_event(ev)
         return True
+
+    def _apply_diag_event(self, ev: Dict[str, Any]) -> None:
+        """Fold a single diagnostics event into accumulated diagnostics state."""
+        d = self._diagnostics
+        etype = ev.get("event_type")
+        ts = ev.get("timestamp")
+
+        if etype == "diag_start":
+            d["active"] = True
+            d["schema_version"] = ev.get("schema_version")
+            d["engine_config"] = ev.get("engine_config", {}) or {}
+            return
+
+        if etype == "diag_end":
+            d["active"] = False
+            return
+
+        if etype == "stall_detected":
+            d["stall_state"] = "stalled"
+            d["stall_since"] = ev.get("first_seen") or ts
+            d["stall_reason"] = ev.get("reason") or ev.get("trigger")
+            return
+
+        if etype == "stall_resolved":
+            d["stall_state"] = "ok"
+            d["stall_since"] = None
+            d["stall_reason"] = None
+            return
+
+        if etype == "idle_diagnosis":
+            d["idle"] = {
+                "timestamp": ts,
+                "idle_job_count": ev.get("idle_job_count"),
+                "pool_available": ev.get("pool_available"),
+                "pool_idle_cpus": ev.get("pool_idle_cpus"),
+                "pool_total_cpus": ev.get("pool_total_cpus"),
+                "pool_idle_memory_mb": ev.get("pool_idle_memory_mb"),
+                "pool_total_memory_mb": ev.get("pool_total_memory_mb"),
+                "findings": ev.get("findings") or [],
+                "suggestions": ev.get("suggestions") or [],
+                "requirement_mismatches": ev.get("requirement_mismatches") or [],
+            }
+            return
+
+        if etype in ("hold_diagnosis", "failure_diagnosis"):
+            entry = {
+                "timestamp": ts,
+                "job_name": ev.get("job_name"),
+                "severity": ev.get("severity"),
+                "summary": ev.get("summary"),
+                "reason": ev.get("reason"),
+                "suggestions": ev.get("suggestions") or [],
+            }
+            bucket = "holds" if etype == "hold_diagnosis" else "failures"
+            d[bucket].append(entry)
+            # Cap to most recent 50 to avoid unbounded growth
+            if len(d[bucket]) > 50:
+                d[bucket] = d[bucket][-50:]
+            jname = entry["job_name"]
+            if jname:
+                self._job_diagnostics[jname] = entry
+            return
+
+        if etype == "diag_error":
+            d["errors"].append({
+                "timestamp": ts,
+                "stage": ev.get("stage"),
+                "error": ev.get("error"),
+            })
+            if len(d["errors"]) > 20:
+                d["errors"] = d["errors"][-20:]
+            return
 
     def _apply_event(self, ev: Dict[str, Any]) -> None:
         """Apply a single event to the accumulated state."""
@@ -490,7 +622,20 @@ class EventConsumer:
             if js.get("hold_reason"):
                 result[key]["hold_reason"] = js["hold_reason"]
                 result[key]["hold_reason_code"] = js.get("hold_reason_code")
+            # Attach diagnostics (hold/failure diagnosis) by exec_job_id
+            diag = self._job_diagnostics.get(js["exec_job_id"])
+            if diag:
+                result[key]["diagnosis"] = diag
         return result
+
+    @property
+    def diagnostics(self) -> Dict[str, Any]:
+        """Aggregated diagnostics state from `diagnostics-events.jsonl`."""
+        return {
+            **self._diagnostics,
+            "available": self._diag_path.exists(),
+            "path": str(self._diag_path),
+        }
 
     @property
     def event_log(self) -> List[Dict[str, Any]]:
@@ -566,6 +711,20 @@ class EventConsumer:
         self._pool_status.clear()
         self._history.clear()
         self._workflow_stats.clear()
+        self._diag_processed_lines = 0
+        self._diagnostics = {
+            "active": False,
+            "schema_version": None,
+            "engine_config": {},
+            "stall_state": "ok",
+            "stall_since": None,
+            "stall_reason": None,
+            "idle": None,
+            "holds": [],
+            "failures": [],
+            "errors": [],
+        }
+        self._job_diagnostics.clear()
 
 
 class RemoteEventConsumer:
@@ -586,7 +745,13 @@ class RemoteEventConsumer:
         self._tmpdir = tmpdir
         self._remote_offset: int = 0
 
-        self._consumer = EventConsumer(self._local_path)
+        # Diagnostics sidecar — sibling of the main event log on the remote.
+        remote_dir = self._remote_path.rsplit("/", 1)[0] if "/" in self._remote_path else "."
+        self._remote_diag_path = f"{remote_dir}/diagnostics-events.jsonl"
+        self._local_diag_path = Path(tmpdir) / "diagnostics-events.jsonl"
+        self._remote_diag_offset: int = 0
+
+        self._consumer = EventConsumer(self._local_path, diag_path=self._local_diag_path)
 
     @staticmethod
     def _parse_spec(spec: str) -> tuple[str, str]:
@@ -650,7 +815,42 @@ class RemoteEventConsumer:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
 
-        return self._consumer.poll()
+        changed = self._consumer.poll()
+        # Best-effort fetch of the diagnostics sidecar (don't fail sync if absent)
+        try:
+            self._sync_diagnostics(ssh_host)
+        except Exception:
+            pass
+        return changed
+
+    def _sync_diagnostics(self, ssh_host: str) -> None:
+        """Tail the remote diagnostics-events.jsonl into the local sidecar."""
+        if self._remote_diag_offset > 0:
+            remote_cmd = (
+                f"test -f {self._remote_diag_path} && "
+                f"tail -c +{self._remote_diag_offset + 1} {self._remote_diag_path}"
+            )
+            write_mode = "ab"
+        else:
+            remote_cmd = (
+                f"test -f {self._remote_diag_path} && cat {self._remote_diag_path}"
+            )
+            write_mode = "wb"
+        cmd = self._ssh_base + [ssh_host, remote_cmd]
+        try:
+            with open(self._local_diag_path, write_mode) as fh:
+                result = subprocess.run(
+                    cmd, stdout=fh, stderr=subprocess.PIPE, timeout=30,
+                )
+            if result.returncode == 0 and self._local_diag_path.exists():
+                new_size = self._local_diag_path.stat().st_size
+                if new_size < self._remote_diag_offset:
+                    self._remote_diag_offset = 0
+                else:
+                    self._remote_diag_offset = new_size
+                self._consumer.poll_diagnostics()
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return
 
     def build_id_map(self, workflow_nodes: List[Dict[str, Any]]) -> None:
         self._consumer.build_id_map(workflow_nodes)
@@ -682,6 +882,10 @@ class RemoteEventConsumer:
     @property
     def workflow_info(self) -> Dict[str, Any]:
         return self._consumer.workflow_info
+
+    @property
+    def diagnostics(self) -> Dict[str, Any]:
+        return self._consumer.diagnostics
 
     def fetch_file(self, remote_path: str) -> Path:
         """Fetch a single file from the remote host via SSH.
