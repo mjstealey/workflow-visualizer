@@ -12,7 +12,7 @@ import traitlets
 
 from .controls import WorkflowControls
 from .events import EventConsumer, RemoteEventConsumer
-from .parser import WorkflowGraph
+from .parser import WorkflowGraph, collapse_graph
 from .state import STATE_COLORS, fmt_memory_mb, fmt_memory, fmt_bytes, fmt_percent, fmt_duration
 
 _HERE = Path(__file__).parent
@@ -41,11 +41,27 @@ def _topo_layers(
     return layers
 
 
+def _aggregate_group_state(member_states: List[str]) -> str:
+    """Combine member display-states into a single group state.
+
+    Precedence (most-attention-grabbing first): FAILED > HELD > RUNNING >
+    QUEUED > POST > PRE > DONE > SUCCESS > UNSUBMITTED.
+    """
+    order = ["FAILED", "HELD", "RUNNING", "QUEUED", "POST", "PRE",
+             "DONE", "SUCCESS", "UNSUBMITTED", "UNKNOWN"]
+    seen = set(member_states)
+    for s in order:
+        if s in seen:
+            return s
+    return "UNSUBMITTED"
+
+
 def _render_dag_svg(
     graph_data: Dict[str, Any],
     job_states: Dict[str, str],
     state_colors: Dict[str, Dict[str, str]],
     show_files: bool,
+    collapse_groups: bool = False,
 ) -> str:
     """Lay out a DAG and return a self-contained SVG string (no JS).
 
@@ -54,6 +70,10 @@ def _render_dag_svg(
     """
     nodes_raw: List[Dict[str, Any]] = graph_data.get("nodes", [])
     edges_raw: List[Dict[str, Any]] = graph_data.get("edges", [])
+    # ``collapse_groups`` is preserved as a parameter for backward compatibility,
+    # but graph_data is expected to already reflect the chosen view (the widget
+    # collapses upstream so both the JS frontend and SVG fallback agree).
+    _ = collapse_groups
 
     if not nodes_raw:
         return (
@@ -433,13 +453,27 @@ def _render_dag_svg(
                     tip_lines.append(f"Stage out: {fm['stageOut']}")
         else:
             nd = node_map[nid]
-            tip_lines.append(f"ID: {nid}")
-            if nd.get("name"):
-                tip_lines.append(f"Name: {nd['name']}")
-            if state:
-                tip_lines.append(f"State: {state}")
+            if nd.get("_isGroup"):
+                kind = nd.get("_groupKind", "group")
+                members = nd.get("_members", [])
+                tip_lines.append(f"Group: {nd.get('name', '')} ({kind})")
+                tip_lines.append(f"Members: {len(members)}")
+                if state:
+                    tip_lines.append(f"State: {state}")
+                for m in members[:3]:
+                    tip_lines.append(f"  {m}")
+                if len(members) > 3:
+                    tip_lines.append(f"  ... and {len(members) - 3} more")
+                continue_tooltip = False
+            else:
+                tip_lines.append(f"ID: {nid}")
+                if nd.get("name"):
+                    tip_lines.append(f"Name: {nd['name']}")
+                if state:
+                    tip_lines.append(f"State: {state}")
+                continue_tooltip = True
             # Info from job_states (EventConsumer rich data)
-            if isinstance(js, dict):
+            if continue_tooltip and isinstance(js, dict):
                 if js.get("exec_job_id"):
                     tip_lines.append(f"Exec: {js['exec_job_id']}")
                 if js.get("type_desc"):
@@ -1323,6 +1357,11 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         Path to SSH identity file for remote mode.
     show_files : bool
         Whether to show data file nodes in the DAG (default: False).
+    collapse_groups : bool
+        Collapse Pegasus auxiliary jobs (stage_in, register, clean_up, ...)
+        and isomorphic compute siblings into super-nodes labeled
+        ``<transformation> ×N``.  Reduces visual density on wide workflows
+        like Montage (default: False).
     renderer : str
         Rendering backend: ``"auto"`` (default) tries the interactive
         anywidget frontend and falls back to SVG; ``"svg"`` forces
@@ -1341,6 +1380,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
     workflow_state = traitlets.Unicode("UNKNOWN").tag(sync=True)
     state_colors = traitlets.Dict(STATE_COLORS).tag(sync=True)
     show_files = traitlets.Bool(False).tag(sync=True)
+    collapse_groups = traitlets.Bool(False).tag(sync=True)
     workflow_info = traitlets.Dict({}).tag(sync=True)
     pool_status = traitlets.Dict({}).tag(sync=True)
     workflow_stats = traitlets.Dict({}).tag(sync=True)
@@ -1359,6 +1399,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         ssh_config: Optional[str] = None,
         ssh_identity: Optional[str] = None,
         show_files: bool = False,
+        collapse_groups: bool = False,
         renderer: str = "auto",
         **kwargs: Any,
     ) -> None:
@@ -1382,8 +1423,15 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         self._poll_thread: Optional[threading.Thread] = None
         self._consumer: Optional[EventConsumer | RemoteEventConsumer] = None
         self._controls = WorkflowControls(submit_dir)
+        # Pristine graph (pre-collapse), kept on the Python side. graph_data
+        # is the *rendered* view, optionally collapsed.
+        self._raw_graph_data: Dict[str, Any] = {}
 
         self.show_files = show_files
+        self.collapse_groups = collapse_groups
+        # React to collapse_groups toggles by re-deriving graph_data and the
+        # aggregated job_states for any group nodes.
+        self.observe(self._on_collapse_change, names="collapse_groups")
 
         # Set up event consumer and source mode (before parsing workflow.yml,
         # since SSH mode needs the consumer to fetch the remote file)
@@ -1423,7 +1471,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
 
         # Populate graph_data and workflow_info from parsed graph
         if graph:
-            self.graph_data = graph.to_dict()
+            self._set_graph(graph.to_dict())
             info: Dict[str, Any] = {}
             if graph.metadata.get("name"):
                 info["dax_label"] = graph.metadata["name"]
@@ -1489,11 +1537,55 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
 
         self._polling = False
 
+    def _set_graph(self, raw: Dict[str, Any]) -> None:
+        """Stash the pristine graph and publish a (possibly collapsed) view."""
+        self._raw_graph_data = raw
+        self.graph_data = self._derive_graph_data()
+        # Recompute aggregated states for any group nodes now that graph_data exists.
+        self.job_states = self._derive_job_states(dict(self.job_states))
+
+    def _derive_graph_data(self) -> Dict[str, Any]:
+        """Apply collapse_groups to ``_raw_graph_data`` and return the result."""
+        raw = self._raw_graph_data
+        if not raw:
+            return raw
+        if not self.collapse_groups:
+            return raw
+        nodes, edges = collapse_graph(
+            list(raw.get("nodes", [])),
+            list(raw.get("edges", [])),
+        )
+        return {"nodes": nodes, "edges": edges, "metadata": raw.get("metadata", {})}
+
+    def _derive_job_states(self, base: Dict[str, Any]) -> Dict[str, Any]:
+        """Layer aggregate group-states on top of raw member states.
+
+        Group ids appear in ``self.graph_data['nodes']`` but never in
+        consumer-emitted events, so we synthesize their states here.
+        """
+        out = dict(base)
+        for n in self.graph_data.get("nodes", []):
+            if not n.get("_isGroup"):
+                continue
+            members = n.get("_members", [])
+            ms: List[str] = []
+            for m in members:
+                js = base.get(m, "UNSUBMITTED")
+                ms.append(js["state"] if isinstance(js, dict) else js)
+            out[n["id"]] = _aggregate_group_state(ms or ["UNSUBMITTED"])
+        return out
+
+    def _on_collapse_change(self, _change: Any) -> None:
+        """Re-derive graph_data and job_states when collapse_groups toggles."""
+        if not self._raw_graph_data:
+            return
+        self.graph_data = self._derive_graph_data()
+        self.job_states = self._derive_job_states(dict(self.job_states))
+
     def _sync_state(self) -> None:
         """Sync consumer state to widget traitlets."""
         if self._consumer is None:
             return
-        self.job_states = self._consumer.job_states
         self.event_log = self._consumer.event_log[:100]  # cap at 100 entries
         self.workflow_state = self._consumer.workflow_state
         self.pool_status = self._consumer.pool_status
@@ -1508,12 +1600,15 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             self.workflow_info = merged
 
         # If no graph_data was set from workflow.yml, build from events
-        if not self.graph_data and hasattr(self._consumer, '_job_state'):
+        if not self._raw_graph_data and hasattr(self._consumer, '_job_state'):
             consumer = self._consumer
             if isinstance(consumer, RemoteEventConsumer):
                 consumer = consumer._consumer
             graph = WorkflowGraph.from_events(consumer._job_state)
-            self.graph_data = graph.to_dict()
+            self._set_graph(graph.to_dict())
+
+        # Layer group-state aggregation on the consumer-supplied job_states.
+        self.job_states = self._derive_job_states(dict(self._consumer.job_states))
 
     def _on_custom_msg(self, widget: Any, content: Dict[str, Any], buffers: Any) -> None:
         """Handle custom messages from the frontend (control buttons)."""
@@ -1552,7 +1647,7 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             if path:
                 try:
                     graph = WorkflowGraph.from_yaml(path)
-                    self.graph_data = graph.to_dict()
+                    self._set_graph(graph.to_dict())
                     if self._consumer:
                         self._consumer.build_id_map(graph.nodes)
                     result = {"status": "ok", "stdout": f"Loaded {path}", "stderr": ""}
@@ -1622,9 +1717,15 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
             dict(self.job_states),
             dict(self.state_colors),
             self.show_files,
+            self.collapse_groups,
         )
 
-    def watch(self, interval: Optional[float] = None, show_files: Optional[bool] = None) -> None:
+    def watch(
+        self,
+        interval: Optional[float] = None,
+        show_files: Optional[bool] = None,
+        collapse_groups: Optional[bool] = None,
+    ) -> None:
         """Auto-refresh the SVG display until the workflow completes or is interrupted.
 
         Uses IPython's ``clear_output`` to redraw in-place, giving a pseudo-live
@@ -1648,6 +1749,8 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
 
         if show_files is not None:
             self.show_files = show_files
+        if collapse_groups is not None:
+            self.collapse_groups = collapse_groups
         refresh = interval if interval is not None else self._poll_interval
 
         # Ensure polling is running
@@ -1677,28 +1780,40 @@ class WorkflowVisualizerWidget(anywidget.AnyWidget):
         except KeyboardInterrupt:
             pass
 
-    def show(self, show_files: Optional[bool] = None) -> None:
+    def show(
+        self,
+        show_files: Optional[bool] = None,
+        collapse_groups: Optional[bool] = None,
+    ) -> None:
         """Re-render the DAG SVG with different options.
 
         Parameters
         ----------
         show_files : bool, optional
-            Toggle data file nodes on/off.  If omitted, flips the current value.
+            Toggle data file nodes on/off.  If omitted (and ``collapse_groups``
+            is not given either), flips the current value of ``show_files``.
+        collapse_groups : bool, optional
+            Toggle node grouping on/off (auxiliary jobs by level + isomorphic
+            siblings into super-nodes).  If omitted, keeps current value.
 
         Usage::
 
-            w.show()                # toggle show_files
-            w.show(show_files=True) # explicitly enable file nodes
+            w.show()                       # toggle show_files
+            w.show(show_files=True)        # explicitly enable file nodes
+            w.show(collapse_groups=True)   # collapse aux + sibling groups
         """
         from IPython.display import display, HTML
 
         # Ensure events are loaded before rendering
         self._poll_once()
 
-        if show_files is None:
+        if show_files is None and collapse_groups is None:
             self.show_files = not self.show_files
         else:
-            self.show_files = show_files
+            if show_files is not None:
+                self.show_files = show_files
+            if collapse_groups is not None:
+                self.collapse_groups = collapse_groups
         header = self._render_header_html()
         svg = self._repr_html_()
         pool_html = _render_pool_status(dict(self.pool_status))

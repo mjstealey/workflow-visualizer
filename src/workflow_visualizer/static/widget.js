@@ -59,26 +59,58 @@ function buildDagreGraph(graphData, showFiles) {
   }
 
   if (showFiles) {
-    const fileNodes = new Set();
+    // Bucket LFNs by route key (producer, sorted(consumers)). Files that
+    // share the same route collapse into one aggregate node when there are
+    // more than FILE_GROUP_THRESHOLD of them. Mirrors the SVG fallback in
+    // _render_dag_svg so the JS view stays manageable on wide workflows.
+    const FILE_GROUP_THRESHOLD = 3;
+    const producers = new Map();          // lfn -> producer node id
+    const consumers = new Map();          // lfn -> [consumer node ids]
     for (const node of nodes) {
       if (!g.hasNode(node.id)) continue;
-      for (const lfn of (node.outputs || [])) {
-        if (!fileNodes.has(lfn)) {
-          const meta = fileMeta[lfn] || { lfn };
-          const label = lfn.length > 20 ? "..." + lfn.slice(-18) : lfn;
-          g.setNode("file:" + lfn, { label, width: 130, height: 26, data: { _isFile: true, lfn, ...meta } });
-          fileNodes.add(lfn);
-        }
-        g.setEdge(node.id, "file:" + lfn);
-      }
+      for (const lfn of (node.outputs || [])) producers.set(lfn, node.id);
       for (const lfn of (node.inputs || [])) {
-        if (!fileNodes.has(lfn)) {
-          const meta = fileMeta[lfn] || { lfn };
-          const label = lfn.length > 20 ? "..." + lfn.slice(-18) : lfn;
-          g.setNode("file:" + lfn, { label, width: 130, height: 26, data: { _isFile: true, lfn, ...meta } });
-          fileNodes.add(lfn);
+        if (!consumers.has(lfn)) consumers.set(lfn, []);
+        consumers.get(lfn).push(node.id);
+      }
+    }
+
+    const allLfns = new Set([...producers.keys(), ...consumers.keys()]);
+    const routes = new Map();             // route key -> [lfns]
+    for (const lfn of allLfns) {
+      const prod = producers.get(lfn) || "";
+      const cons = (consumers.get(lfn) || []).slice().sort();
+      const key = prod + "||" + cons.join(",");
+      if (!routes.has(key)) routes.set(key, { prod, cons, lfns: [] });
+      routes.get(key).lfns.push(lfn);
+    }
+
+    for (const { prod, cons, lfns } of routes.values()) {
+      if (lfns.length > FILE_GROUP_THRESHOLD) {
+        const fid = "filegroup:" + (prod || "input") + ":" + (cons.join(",") || "none");
+        g.setNode(fid, {
+          label: lfns.length + " files",
+          width: 130,
+          height: 26,
+          data: {
+            _isFile: true,
+            _file_count: lfns.length,
+            _file_samples: lfns.slice(0, 3),
+          },
+        });
+        if (prod && g.hasNode(prod)) g.setEdge(prod, fid);
+        for (const cid of cons) if (g.hasNode(cid)) g.setEdge(fid, cid);
+      } else {
+        for (const lfn of lfns) {
+          const fid = "file:" + lfn;
+          if (!g.hasNode(fid)) {
+            const meta = fileMeta[lfn] || { lfn };
+            const label = lfn.length > 20 ? "..." + lfn.slice(-18) : lfn;
+            g.setNode(fid, { label, width: 130, height: 26, data: { _isFile: true, lfn, ...meta } });
+          }
+          if (prod && g.hasNode(prod)) g.setEdge(prod, fid);
+          for (const cid of cons) if (g.hasNode(cid)) g.setEdge(fid, cid);
         }
-        g.setEdge("file:" + lfn, node.id);
       }
     }
   }
@@ -272,7 +304,22 @@ function showTooltip(tooltip, event, node, jobState) {
 }
 
 function showFileTooltip(tooltip, event, fileMeta) {
-  let html = `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">File</span><span class="wfviz-tooltip-val">${fileMeta.lfn || ""}</span></div>`;
+  let html;
+  if (fileMeta._file_count) {
+    html = `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Files</span><span class="wfviz-tooltip-val">${fileMeta._file_count}</span></div>`;
+    const samples = fileMeta._file_samples || [];
+    if (samples.length) {
+      html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Examples</span><span class="wfviz-tooltip-val wfviz-tooltip-mono">${samples.join("<br>")}</span></div>`;
+    }
+    if (fileMeta._file_count > samples.length) {
+      html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key"></span><span class="wfviz-tooltip-val">... and ${fileMeta._file_count - samples.length} more</span></div>`;
+    }
+    tooltip.html(html);
+    tooltip.classed("visible", true);
+    moveTooltip(tooltip, event);
+    return;
+  }
+  html = `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">File</span><span class="wfviz-tooltip-val">${fileMeta.lfn || ""}</span></div>`;
   if (fileMeta.type) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Usage</span><span class="wfviz-tooltip-val">${fileMeta.type}</span></div>`;
   if (fileMeta.size !== undefined) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Size</span><span class="wfviz-tooltip-val">${fileMeta.size}</span></div>`;
   if (fileMeta.namespace) html += `<div class="wfviz-tooltip-row"><span class="wfviz-tooltip-key">Namespace</span><span class="wfviz-tooltip-val">${fileMeta.namespace}</span></div>`;
